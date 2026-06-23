@@ -143,7 +143,19 @@ Run:
 ./test.sh
 ```
 
-The harness reads `config.yaml`, starts the server if it is not already running, creates two instances, verifies isolation, reset, invalid-code handling, and legacy routes.
+The harness runs unit tests first, then reads `config.yaml`, starts the server if it is not already running, creates two instances, verifies seeded pictures, isolation, reset, invalid-code handling, and legacy routes.
+
+Unit tests only:
+
+```bash
+npm run test:unit
+```
+
+API integration tests only:
+
+```bash
+npm run test:integration
+```
 
 If `node_modules` is missing, run `npm install` first.
 

@@ -22,6 +22,8 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+node --test tests/unit/*.test.js
+
 if ! curl -fsS "$BASE_URL/health" >/dev/null 2>&1; then
   if [ ! -d node_modules ]; then
     echo "node_modules is missing. Run npm install before ./test.sh." >&2
