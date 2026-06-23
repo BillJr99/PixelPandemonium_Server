@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { PICTURES } = require("./pictures");
 
 const CREATE_INSTANCES_TABLE = `
 CREATE TABLE IF NOT EXISTS INSTANCES (
@@ -23,11 +24,21 @@ CREATE TABLE IF NOT EXISTS DATA (
 );
 `;
 
+const CREATE_PICTURES_TABLE = `
+CREATE TABLE IF NOT EXISTS PICTURES (
+  ID TEXT PRIMARY KEY NOT NULL,
+  TITLE TEXT NOT NULL,
+  SCRIPT TEXT NOT NULL,
+  ENABLED INTEGER DEFAULT 1 NOT NULL
+);
+`;
+
 const CREATE_INDEXES = [
   "CREATE INDEX IF NOT EXISTS IDX_DATA_NAME_TIMESTAMP ON DATA (NAME, TIMESTAMP)",
   "CREATE INDEX IF NOT EXISTS IDX_DATA_INSTANCE_TIMESTAMP ON DATA (INSTANCE_CODE, TIMESTAMP, ID)",
   "CREATE INDEX IF NOT EXISTS IDX_INSTANCES_CODE ON INSTANCES (INSTANCE_CODE)",
-  "CREATE INDEX IF NOT EXISTS IDX_INSTANCES_ADMIN_CODE ON INSTANCES (ADMIN_CODE)"
+  "CREATE INDEX IF NOT EXISTS IDX_INSTANCES_ADMIN_CODE ON INSTANCES (ADMIN_CODE)",
+  "CREATE INDEX IF NOT EXISTS IDX_PICTURES_ENABLED ON PICTURES (ENABLED, ID)"
 ];
 
 function normalizeToken(value, fallback, length) {
@@ -119,10 +130,31 @@ function all(db, sql, params = []) {
 async function migrate(db) {
   await run(db, CREATE_DATA_TABLE);
   await run(db, CREATE_INSTANCES_TABLE);
+  await run(db, CREATE_PICTURES_TABLE);
   await run(db, "ALTER TABLE DATA ADD COLUMN INSTANCE_CODE TEXT").catch((err) => {
     if (!/duplicate column/i.test(err.message)) throw err;
   });
   for (const sql of CREATE_INDEXES) await run(db, sql);
+  await seedPictures(db);
+}
+
+async function seedPictures(db) {
+  for (const picture of PICTURES) {
+    await run(
+      db,
+      `INSERT INTO PICTURES (ID, TITLE, SCRIPT, ENABLED)
+       VALUES (?, ?, ?, 1)
+       ON CONFLICT(ID) DO UPDATE SET
+         TITLE = excluded.TITLE,
+         SCRIPT = excluded.SCRIPT,
+         ENABLED = 1`,
+      [picture.id, picture.title, picture.script]
+    );
+  }
+}
+
+async function listPictures(db) {
+  return all(db, "SELECT ID as id, TITLE as title, SCRIPT as script FROM PICTURES WHERE ENABLED = 1 ORDER BY TITLE ASC");
 }
 
 async function createInstance(db, input, config) {
@@ -133,6 +165,13 @@ async function createInstance(db, input, config) {
 
   if (!pictureId || !teacherName || !dateTime) {
     const err = new Error("Missing: pictureId, teacherName, dateTime");
+    err.status = 400;
+    throw err;
+  }
+
+  const picture = await get(db, "SELECT ID FROM PICTURES WHERE ID = ? AND ENABLED = 1", [pictureId]);
+  if (!picture) {
+    const err = new Error("Unknown pictureId");
     err.status = 400;
     throw err;
   }
@@ -207,8 +246,11 @@ async function cleanupExpired(db) {
 module.exports = {
   CREATE_DATA_TABLE,
   CREATE_INSTANCES_TABLE,
+  CREATE_PICTURES_TABLE,
   CREATE_INDEXES,
   migrate,
+  seedPictures,
+  listPictures,
   createInstance,
   getInstance,
   requireActiveInstance,

@@ -36,6 +36,8 @@ if ! curl -fsS "$BASE_URL/health" >/dev/null 2>&1; then
 fi
 
 curl -fsS "$BASE_URL/health" >/dev/null
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/pictures" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length < 16 || !d.some(p => p.id === 'tetris')) process.exit(1)"
 
 CREATE_A="$(curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d '{"pictureId":"tetris","teacherName":"Ada Lovelace","dateTime":"2026-06-23T10:30:00","expirationHours":2}' \

@@ -13,6 +13,7 @@ const {
   resetInstance,
   cleanupExpired,
   validateCheckDigit,
+  listPictures,
   run,
   all
 } = require("./instanceManager");
@@ -87,6 +88,18 @@ app.get("/health", (req, res) => {
       "/faye"
     ]
   });
+});
+
+app.get("/pictures", async (req, res) => {
+  const db = openDb();
+  try {
+    await migrate(db);
+    res.json(await listPictures(db));
+  } catch (err) {
+    errorResponse(res, err);
+  } finally {
+    db.close();
+  }
 });
 
 app.post("/instance/create", async (req, res) => {

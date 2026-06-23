@@ -31,6 +31,8 @@ Edit `config.yaml` before running or deploying.
 
 ## Local Run
 
+Terminal 1:
+
 ```bash
 npm start
 ```
@@ -43,7 +45,24 @@ curl http://localhost:8000/health
 
 Realtime Faye is mounted at `/faye`.
 
+Terminal 2 can run the test harness:
+
+```bash
+./test.sh
+```
+
 ## API
+
+### List pictures
+
+The server prepopulates the database with the original CS173 Pixel Pandemonium image inventory.
+
+```bash
+curl http://localhost:8000/pictures \
+  -H 'Origin: http://localhost:4000'
+```
+
+`POST /instance/create` validates `pictureId` against this table.
 
 ### Create an instance
 
@@ -108,6 +127,7 @@ The browser catches most typos locally, and the server still validates code form
 ## Use Cases
 
 - A teacher creates an instance for a picture and class time.
+- The server validates the selected picture against the prepopulated original CS173 image inventory.
 - The teacher shares the student QR code or URL.
 - Students submit tile pixels into that instance only.
 - The teacher opens the replay URL and watches live updates.

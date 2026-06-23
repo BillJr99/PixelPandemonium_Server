@@ -12,6 +12,25 @@ interface ClientAttachment {
   channel: string;
 }
 
+const PICTURES = [
+  { id: "tetris", title: "Demo (Tetris)", script: "files/drawingcanvas-tetris/Post-It_tetris_composite.js" },
+  { id: "cs4allpa2022", title: "CS4AllPA-2022", script: "files/drawingcanvas-cs4allpa2022/Post-It_CSforALLinPA_RWB_bk_v6x_composite.js" },
+  { id: "cs4philly2021", title: "CS4Philly-2021", script: "files/drawingcanvas-cs4philly2021/Post-It_CS4Philly_2021_v0_composite.js" },
+  { id: "cs4philly2022", title: "CS4Philly-2022", script: "files/drawingcanvas-cs4philly2022/Post-It_CS4Philly_2022_composite.js" },
+  { id: "eagles", title: "Eagles", script: "files/drawingcanvas-eagles/Post-It_Eagles_Logo_composite.js" },
+  { id: "eagles2", title: "Eagles2", script: "files/drawingcanvas-eagles2/Post-It_Eagles_Logo2_composite.js" },
+  { id: "ghopper", title: "GHopper", script: "files/drawingcanvas-ghopper/Post-It_CS4Philly_GHopper_composite.js" },
+  { id: "lovestatue", title: "LoveStatue", script: "files/drawingcanvas-lovestatue/Post-It_LOVE_Statue_composite.js" },
+  { id: "mikewazowski", title: "MikeWazowski", script: "files/drawingcanvas-mikewazowski/Post-It_MikeWazowski2_composite.js" },
+  { id: "phillyscifest", title: "PhillySciFest-2022", script: "files/drawingcanvas-phillyscifest/Post-It_Banner_PhillySciFest_v4_composite.js" },
+  { id: "pixar2022", title: "Pixar-2022", script: "files/drawingcanvas-pixar2022/Post-It_CS4Philly_Pixar_2022_composite.js" },
+  { id: "robotspringboard", title: "RobotSpringboard", script: "files/drawingcanvas-robotspringboard/Post-It_RobotSpringboard_2018_v2a_composite.js" },
+  { id: "robotspringboard2022", title: "RobotSpringboard-2022", script: "files/drawingcanvas-robotspringboard2022/Post-It_RobotSpringboard_2022_composite.js" },
+  { id: "rocky2022", title: "Rocky-2022", script: "files/drawingcanvas-rocky2022/Post-It_Rocky_ArtMuseum_2022_composite.js" },
+  { id: "yellowsubmarine", title: "YellowSubmarine", script: "files/drawingcanvas-yellowsubmarine/Post-It_YellowSubmarine_composite.js" },
+  { id: "yellowsubmarine2022", title: "YellowSubmarine-2022", script: "files/drawingcanvas-yellowsubmarine2022/Post-It_YellowSubmarine_2022_composite.js" }
+];
+
 function allowedOrigins(env: Env): string[] {
   return (env.ALLOWED_ORIGINS || "").split(",").map((item) => item.trim()).filter(Boolean);
 }
@@ -121,6 +140,19 @@ async function activeInstance(env: Env, code: string) {
   return { row };
 }
 
+async function ensurePictures(env: Env): Promise<void> {
+  for (const picture of PICTURES) {
+    await env.DB.prepare(
+      `INSERT INTO PICTURES (ID, TITLE, SCRIPT, ENABLED)
+       VALUES (?, ?, ?, 1)
+       ON CONFLICT(ID) DO UPDATE SET
+         TITLE = excluded.TITLE,
+         SCRIPT = excluded.SCRIPT,
+         ENABLED = 1`
+    ).bind(picture.id, picture.title, picture.script).run();
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -133,11 +165,20 @@ export default {
       return json(request, env, { status: "ok", runtime: "cloudflare-worker", routes: ["/instance/create", "/instance/:code/status", "/instance/:code/insert", "/instance/:code/retrieve", "/instance/:code/reset", "/faye"] });
     }
 
+    if (url.pathname === "/pictures" && request.method === "GET") {
+      await ensurePictures(env);
+      const result = await env.DB.prepare("SELECT ID as id, TITLE as title, SCRIPT as script FROM PICTURES WHERE ENABLED = 1 ORDER BY TITLE ASC").all();
+      return json(request, env, result.results);
+    }
+
     if (url.pathname === "/instance/create" && request.method === "POST") {
+      await ensurePictures(env);
       const body = await readRequestBody(request);
       if (!body.pictureId || !body.teacherName || !body.dateTime) {
         return json(request, env, { error: "Missing: pictureId, teacherName, dateTime" }, { status: 400 });
       }
+      const picture = await env.DB.prepare("SELECT ID FROM PICTURES WHERE ID = ? AND ENABLED = 1").bind(body.pictureId).first();
+      if (!picture) return json(request, env, { error: "Unknown pictureId" }, { status: 400 });
       const code = generateInstanceCode(body.pictureId, body.teacherName, body.dateTime);
       const admin = adminCode();
       const hours = Number(body.expirationHours || env.DEFAULT_EXPIRATION_HOURS || 72);
