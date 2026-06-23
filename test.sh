@@ -69,11 +69,30 @@ curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/retrieve" \
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_B/retrieve" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length!==1 || !d[0].DATA.includes('#0000ff')) process.exit(1)"
 
+ADMIN_VIEW="$(curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/admin?admin=$ADMIN_A")"
+EVENT_ID="$(node -e "const data=JSON.parse(process.argv[1]); if(data.rows.length!==1) process.exit(1); console.log(data.rows[0].ID)" "$ADMIN_VIEW")"
+curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d "{\"adminCode\":\"$ADMIN_A\",\"data\":\"0,0,10,10,#00ff00,0,0\"}" \
+  "$BASE_URL/instance/$CODE_A/event/$EVENT_ID/update" >/dev/null
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/retrieve" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length!==1 || !d[0].DATA.includes('#00ff00')) process.exit(1)"
+
 curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d "{\"adminCode\":\"$ADMIN_A\"}" \
   "$BASE_URL/instance/$CODE_A/reset" >/dev/null
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/retrieve" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length!==0) process.exit(1)"
+
+curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d '{"data":"0,0,10,10,#123456,0,0"}' \
+  "$BASE_URL/instance/$CODE_A/insert" >/dev/null
+curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d "{\"adminCode\":\"$ADMIN_A\"}" \
+  "$BASE_URL/instance/$CODE_A/deactivate" >/dev/null
+DELETE_STATUS="$(curl -s -o /tmp/pixel-deleted.json -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/status")"
+test "$DELETE_STATUS" = "404"
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/retrieve?name=$CODE_A" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length!==1 || !d[0].DATA.includes('#123456')) process.exit(1)"
 
 curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d '{"data":"legacy"}' "$BASE_URL/insert?name=legacy-test" >/dev/null

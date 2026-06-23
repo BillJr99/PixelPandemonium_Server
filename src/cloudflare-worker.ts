@@ -117,7 +117,7 @@ function urls(env: Env, instanceCode: string, admin: string) {
   return {
     studentUrl: `${base}/instructions.html?instance=${encodeURIComponent(instanceCode)}`,
     replayUrl: `${base}/replay.html?instance=${encodeURIComponent(instanceCode)}`,
-    adminUrl: `${base}/teacher-dashboard.html?instance=${encodeURIComponent(instanceCode)}&admin=${encodeURIComponent(admin)}`
+    adminUrl: `${base}/admin.html?instance=${encodeURIComponent(instanceCode)}&admin=${encodeURIComponent(admin)}`
   };
 }
 
@@ -136,7 +136,16 @@ async function activeInstance(env: Env, code: string) {
   if (!validateCheckDigit(code)) return { error: "Invalid instance code", status: 400 };
   const row = await env.DB.prepare("SELECT * FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(code).first<any>();
   if (!row) return { error: "Instance not found", status: 404 };
+  if (row.ACTIVE === 0) return { error: "Instance not found", status: 404 };
   if (new Date(row.EXPIRES_AT).getTime() <= Date.now()) return { error: "Instance expired", status: 410, row };
+  return { row };
+}
+
+async function adminInstance(env: Env, code: string, admin: string | null) {
+  if (!validateCheckDigit(code)) return { error: "Invalid instance code", status: 400 };
+  const row = await env.DB.prepare("SELECT * FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(code).first<any>();
+  if (!row || row.ACTIVE === 0) return { error: "Instance not found", status: 404 };
+  if (row.ADMIN_CODE !== admin) return { error: "Invalid admin code", status: 403 };
   return { row };
 }
 
@@ -189,10 +198,34 @@ export default {
       return json(request, env, { instanceCode: code, adminCode: admin, pictureId: body.pictureId, teacherName: body.teacherName, requestedDateTime: body.dateTime, expiresAt, ...urls(env, code, admin) }, { status: 201 });
     }
 
-    const instanceMatch = url.pathname.match(/^\/instance\/([^/]+)\/(status|insert|retrieve|reset)$/);
+    const instanceMatch = url.pathname.match(/^\/instance\/([^/]+)\/(status|insert|retrieve|reset|admin|deactivate|delete)$/);
     if (instanceMatch) {
       const code = decodeURIComponent(instanceMatch[1]);
       const action = instanceMatch[2];
+      if (action === "admin" && request.method === "GET") {
+        const found = await adminInstance(env, code, url.searchParams.get("admin"));
+        if (found.error) return json(request, env, { error: found.error }, { status: found.status });
+        const row = found.row!;
+        const result = await env.DB.prepare("SELECT * FROM DATA WHERE INSTANCE_CODE = ? ORDER BY TIMESTAMP ASC, ID ASC").bind(code).all();
+        return json(request, env, {
+          instanceCode: row.INSTANCE_CODE,
+          pictureId: row.PICTURE_ID,
+          teacherName: row.TEACHER_NAME,
+          requestedDateTime: row.REQUESTED_DATETIME,
+          createdAt: row.CREATED_AT,
+          expiresAt: row.EXPIRES_AT,
+          rows: result.results
+        });
+      }
+
+      if ((action === "deactivate" || action === "delete") && request.method === "POST") {
+        const body = await readRequestBody(request);
+        const found = await adminInstance(env, code, body.adminCode || url.searchParams.get("admin"));
+        if (found.error) return json(request, env, { error: found.error }, { status: found.status });
+        const result = await env.DB.prepare("UPDATE INSTANCES SET ACTIVE = 0 WHERE INSTANCE_CODE = ?").bind(code).run();
+        return json(request, env, { status: "deactivated", deactivatedInstances: result.meta.changes || 0 });
+      }
+
       const found = await activeInstance(env, code);
       if (found.error) return json(request, env, { valid: false, error: found.error, ...(found.row ? { pictureId: found.row.PICTURE_ID, expiresAt: found.row.EXPIRES_AT } : {}) }, { status: found.status });
       const row = found.row!;
@@ -228,6 +261,24 @@ export default {
         const result = await env.DB.prepare("DELETE FROM DATA WHERE INSTANCE_CODE = ?").bind(code).run();
         return json(request, env, { status: "reset", deletedRows: result.meta.changes || 0 });
       }
+    }
+
+    const eventMatch = url.pathname.match(/^\/instance\/([^/]+)\/event\/([^/]+)\/(update|delete)$/);
+    if (eventMatch && request.method === "POST") {
+      const code = decodeURIComponent(eventMatch[1]);
+      const id = decodeURIComponent(eventMatch[2]);
+      const action = eventMatch[3];
+      const body = await readRequestBody(request);
+      const found = await adminInstance(env, code, body.adminCode || url.searchParams.get("admin"));
+      if (found.error) return json(request, env, { error: found.error }, { status: found.status });
+      if (action === "update") {
+        const result = await env.DB.prepare("UPDATE DATA SET DATA = ? WHERE ID = ? AND INSTANCE_CODE = ?").bind(body.data ?? "", id, code).run();
+        if (!result.meta.changes) return json(request, env, { error: "Event not found" }, { status: 404 });
+        return json(request, env, { status: "updated", updatedRows: result.meta.changes || 0 });
+      }
+      const result = await env.DB.prepare("DELETE FROM DATA WHERE ID = ? AND INSTANCE_CODE = ?").bind(id, code).run();
+      if (!result.meta.changes) return json(request, env, { error: "Event not found" }, { status: 404 });
+      return json(request, env, { status: "deleted", deletedRows: result.meta.changes || 0 });
     }
 
     if (env.LEGACY_ROUTES_ENABLED === "true" && url.pathname === "/insert" && request.method === "POST") {

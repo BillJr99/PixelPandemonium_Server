@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS INSTANCES (
   TEACHER_NAME TEXT NOT NULL,
   REQUESTED_DATETIME TEXT NOT NULL,
   CREATED_AT TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
-  EXPIRES_AT TEXT NOT NULL
+  EXPIRES_AT TEXT NOT NULL,
+  ACTIVE INTEGER DEFAULT 1 NOT NULL
 );
 `;
 
@@ -134,6 +135,9 @@ async function migrate(db) {
   await run(db, "ALTER TABLE DATA ADD COLUMN INSTANCE_CODE TEXT").catch((err) => {
     if (!/duplicate column/i.test(err.message)) throw err;
   });
+  await run(db, "ALTER TABLE INSTANCES ADD COLUMN ACTIVE INTEGER DEFAULT 1 NOT NULL").catch((err) => {
+    if (!/duplicate column/i.test(err.message)) throw err;
+  });
   for (const sql of CREATE_INDEXES) await run(db, sql);
   await seedPictures(db);
 }
@@ -212,6 +216,11 @@ async function requireActiveInstance(db, code) {
   }
   const instance = await getInstance(db, code);
   if (!instance) {
+    const err = new Error("Instance not found");
+    err.status = 404;
+    throw err;
+  }
+  if (!instance.ACTIVE) {
     const err = new Error("Instance not found");
     err.status = 404;
     throw err;

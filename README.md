@@ -112,6 +112,44 @@ curl -X POST http://localhost:8000/instance/INSTANCE-CODE/reset \
   -d '{"adminCode":"ADMIN-CODE"}'
 ```
 
+### Admin inspect an instance
+
+```bash
+curl "http://localhost:8000/instance/INSTANCE-CODE/admin?admin=ADMIN-CODE" \
+  -H 'Origin: http://localhost:4000'
+```
+
+Returns instance metadata plus replay rows. This is used by `admin.html`.
+
+### Update one replay row
+
+```bash
+curl -X POST http://localhost:8000/instance/INSTANCE-CODE/event/ROW-ID/update \
+  -H 'Origin: http://localhost:4000' \
+  -H 'Content-Type: application/json' \
+  -d '{"adminCode":"ADMIN-CODE","data":"0,0,10,10,#00ff00,0,0"}'
+```
+
+### Delete one replay row
+
+```bash
+curl -X POST http://localhost:8000/instance/INSTANCE-CODE/event/ROW-ID/delete \
+  -H 'Origin: http://localhost:4000' \
+  -H 'Content-Type: application/json' \
+  -d '{"adminCode":"ADMIN-CODE"}'
+```
+
+### Deactivate an instance
+
+```bash
+curl -X POST http://localhost:8000/instance/INSTANCE-CODE/deactivate \
+  -H 'Origin: http://localhost:4000' \
+  -H 'Content-Type: application/json' \
+  -d '{"adminCode":"ADMIN-CODE"}'
+```
+
+Deactivate is a soft delete. It sets `ACTIVE = 0`, preserves the instance row and replay data, and makes the instance behave as not found for student/status/replay access. The legacy `/instance/:code/delete` route is retained as an alias for deactivation.
+
 ## Instance Codes
 
 Codes are generated from:
@@ -132,6 +170,9 @@ The browser catches most typos locally, and the server still validates code form
 - Students submit tile pixels into that instance only.
 - The teacher opens the replay URL and watches live updates.
 - A teacher resets an instance for practice or reuse.
+- A teacher/admin edits or deletes individual replay rows from the admin page.
+- A teacher/admin deactivates an instance without deleting stored replay data.
+- A teacher/admin generates time-lapse animations from actual instance data or from the finished product, including unfinished activities.
 - Two teachers can use the same picture at the same time without data collision.
 - Expired instances reject new writes and clear replay data during cleanup.
 
@@ -140,6 +181,7 @@ The browser catches most typos locally, and the server still validates code form
 Run:
 
 ```bash
+npm install
 ./test.sh
 ```
 
@@ -163,7 +205,12 @@ If `node_modules` is missing, run `npm install` first.
 
 Cloudflare Workers cannot run the Express/Faye server process directly. This repository includes a compatible Worker adapter in `src/cloudflare-worker.ts` using D1 for storage and Durable Objects for WebSocket pub/sub.
 
-1. Install dependencies.
+1. Install dependencies:
+
+```bash
+npm install
+```
+
 2. Log in:
 
 ```bash
@@ -190,3 +237,13 @@ npm run cloudflare:deploy
 ```
 
 The Cloudflare adapter exposes the same HTTP routes. Realtime uses a WebSocket channel contract rather than the Faye Node client, because Faye’s Node adapter is not supported in Workers.
+
+After Cloudflare deploys, update the client `config.yaml`:
+
+```yaml
+server_url: https://your-worker.your-subdomain.workers.dev
+realtime_url: https://your-worker.your-subdomain.workers.dev
+base_url: https://your-github-user.github.io/PixelPandemonium_client
+```
+
+Then deploy the client to GitHub Pages from its `gh-pages` branch.

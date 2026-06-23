@@ -36,7 +36,7 @@ function buildUrls(instanceCode, adminCode) {
   return {
     studentUrl: `${base}/instructions.html?instance=${encodeURIComponent(instanceCode)}`,
     replayUrl: `${base}/replay.html?instance=${encodeURIComponent(instanceCode)}`,
-    adminUrl: `${base}/teacher-dashboard.html?instance=${encodeURIComponent(instanceCode)}&admin=${encodeURIComponent(adminCode)}`
+    adminUrl: `${base}/admin.html?instance=${encodeURIComponent(instanceCode)}&admin=${encodeURIComponent(adminCode)}`
   };
 }
 
@@ -54,6 +54,31 @@ function publicInstance(row) {
 function errorResponse(res, err) {
   const status = err.status || 500;
   res.status(status).json({ valid: false, error: err.message || "Server error" });
+}
+
+async function requireAdminInstance(db, code, adminCode) {
+  if (!validateCheckDigit(code)) {
+    const err = new Error("Invalid instance code");
+    err.status = 400;
+    throw err;
+  }
+  const row = await getInstance(db, code);
+  if (!row) {
+    const err = new Error("Instance not found");
+    err.status = 404;
+    throw err;
+  }
+  if (!row.ACTIVE) {
+    const err = new Error("Instance not found");
+    err.status = 404;
+    throw err;
+  }
+  if (row.ADMIN_CODE !== adminCode) {
+    const err = new Error("Invalid admin code");
+    err.status = 403;
+    throw err;
+  }
+  return row;
 }
 
 const corsOptions = {
@@ -124,6 +149,7 @@ app.get("/instance/:code/status", async (req, res) => {
     }
     const row = await getInstance(db, req.params.code);
     if (!row) return res.status(404).json({ valid: false, error: "Instance not found" });
+    if (!row.ACTIVE) return res.status(404).json({ valid: false, error: "Instance not found" });
     const expired = new Date(row.EXPIRES_AT).getTime() <= Date.now();
     if (expired) return res.status(410).json({ valid: false, error: "Instance expired", ...publicInstance(row) });
     res.json({ valid: true, ...publicInstance(row), ...buildUrls(row.INSTANCE_CODE, row.ADMIN_CODE) });
@@ -174,6 +200,72 @@ app.post("/instance/:code/reset", async (req, res) => {
     const adminCode = req.body.adminCode || req.query.admin;
     const result = await resetInstance(db, req.params.code, adminCode);
     res.json({ status: "reset", ...result });
+  } catch (err) {
+    errorResponse(res, err);
+  } finally {
+    db.close();
+  }
+});
+
+app.get("/instance/:code/admin", async (req, res) => {
+  const db = openDb();
+  try {
+    await migrate(db);
+    const row = await requireAdminInstance(db, req.params.code, req.query.admin);
+    const rows = await all(db, "SELECT * FROM DATA WHERE INSTANCE_CODE = ? ORDER BY TIMESTAMP ASC, ID ASC", [req.params.code]);
+    res.json({ ...publicInstance(row), rows });
+  } catch (err) {
+    errorResponse(res, err);
+  } finally {
+    db.close();
+  }
+});
+
+async function deactivateInstance(req, res) {
+  const db = openDb();
+  try {
+    await migrate(db);
+    await requireAdminInstance(db, req.params.code, req.body.adminCode || req.query.admin);
+    const result = await run(db, "UPDATE INSTANCES SET ACTIVE = 0 WHERE INSTANCE_CODE = ?", [req.params.code]);
+    res.json({ status: "deactivated", deactivatedInstances: result.changes || 0 });
+  } catch (err) {
+    errorResponse(res, err);
+  } finally {
+    db.close();
+  }
+}
+
+app.post("/instance/:code/deactivate", deactivateInstance);
+app.post("/instance/:code/delete", deactivateInstance);
+
+app.post("/instance/:code/event/:id/update", async (req, res) => {
+  const db = openDb();
+  try {
+    await migrate(db);
+    await requireAdminInstance(db, req.params.code, req.body.adminCode || req.query.admin);
+    const data = req.body.data === undefined ? "" : String(req.body.data);
+    const result = await run(db, "UPDATE DATA SET DATA = ? WHERE ID = ? AND INSTANCE_CODE = ?", [
+      data,
+      req.params.id,
+      req.params.code
+    ]);
+    if (!result.changes) return res.status(404).json({ error: "Event not found" });
+    res.json({ status: "updated", updatedRows: result.changes });
+  } catch (err) {
+    errorResponse(res, err);
+  } finally {
+    db.close();
+  }
+});
+
+app.post("/instance/:code/event/:id/delete", async (req, res) => {
+  const db = openDb();
+  try {
+    await migrate(db);
+    await requireAdminInstance(db, req.params.code, req.body.adminCode || req.query.admin);
+    const result = await run(db, "DELETE FROM DATA WHERE ID = ? AND INSTANCE_CODE = ?", [req.params.id, req.params.code]);
+    if (!result.changes) return res.status(404).json({ error: "Event not found" });
+    res.json({ status: "deleted", deletedRows: result.changes });
   } catch (err) {
     errorResponse(res, err);
   } finally {
