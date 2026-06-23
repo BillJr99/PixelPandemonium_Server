@@ -93,6 +93,20 @@ test("requireActiveInstance rejects expired instances", async () => {
   db.close();
 });
 
+test("requireActiveInstance treats inactive instances as not found", async () => {
+  const db = memoryDb();
+  await migrate(db);
+  const created = await createInstance(db, {
+    pictureId: "tetris",
+    teacherName: "Ada Lovelace",
+    dateTime: "2026-06-23T10:30:00",
+    expirationHours: 1
+  }, config);
+  await run(db, "UPDATE INSTANCES SET ACTIVE = 0 WHERE INSTANCE_CODE = ?", [created.instanceCode]);
+  await assert.rejects(requireActiveInstance(db, created.instanceCode), /Instance not found/);
+  db.close();
+});
+
 test("resetInstance deletes only rows for the requested instance", async () => {
   const db = memoryDb();
   await migrate(db);

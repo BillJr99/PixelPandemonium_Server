@@ -52,6 +52,8 @@ CODE_A="$(node -e "const data=JSON.parse(process.argv[1]); console.log(data.inst
 ADMIN_A="$(node -e "const data=JSON.parse(process.argv[1]); console.log(data.adminCode)" "$CREATE_A")"
 CODE_B="$(node -e "const data=JSON.parse(process.argv[1]); console.log(data.instanceCode)" "$CREATE_B")"
 
+node -e "const data=JSON.parse(process.argv[1]); if(!/admin\\.html\\?instance=/.test(data.adminUrl)) process.exit(1)" "$CREATE_A"
+
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/status" | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!d.valid) process.exit(1)"
 
 INVALID_STATUS="$(curl -s -o /tmp/pixel-invalid.json -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/instance/BAD-CODE/status")"
@@ -76,6 +78,16 @@ curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   "$BASE_URL/instance/$CODE_A/event/$EVENT_ID/update" >/dev/null
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/retrieve" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length!==1 || !d[0].DATA.includes('#00ff00')) process.exit(1)"
+curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d '{"data":"0,0,10,10,#111111,2,0"}' \
+  "$BASE_URL/instance/$CODE_A/insert" >/dev/null
+ADMIN_VIEW_AFTER_INSERT="$(curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/admin?admin=$ADMIN_A")"
+DELETE_EVENT_ID="$(node -e "const data=JSON.parse(process.argv[1]); if(data.rows.length!==2) process.exit(1); console.log(data.rows.find(row => row.DATA.includes('#111111')).ID)" "$ADMIN_VIEW_AFTER_INSERT")"
+curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d "{\"adminCode\":\"$ADMIN_A\"}" \
+  "$BASE_URL/instance/$CODE_A/event/$DELETE_EVENT_ID/delete" >/dev/null
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/retrieve" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length!==1 || d.some(row => row.DATA.includes('#111111'))) process.exit(1)"
 
 curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d "{\"adminCode\":\"$ADMIN_A\"}" \
