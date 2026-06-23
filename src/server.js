@@ -356,8 +356,9 @@ async function start() {
     }
   }, cleanupMs).unref();
 
-  server.listen(config.port, () => {
-    console.log(`Pixel Pandemonium server listening on port ${config.port}`);
+  const port = process.env.PORT || config.port;
+  server.listen(port, () => {
+    console.log(`Pixel Pandemonium server listening on port ${port}`);
   });
 }
 

@@ -247,3 +247,40 @@ base_url: https://your-github-user.github.io/PixelPandemonium_client
 ```
 
 Then deploy the client to GitHub Pages from its `gh-pages` branch.
+
+## Replit Deployment
+
+The Node Express/Faye server can also run on Replit. This is supported for testing or simple hosting, although the project is designed to avoid depending on Replit long term.
+
+1. Create a Node.js Repl.
+2. Upload or clone this server repository.
+3. Install dependencies:
+
+```bash
+npm install
+```
+
+4. Configure `config.yaml`:
+
+```yaml
+allowed_origins:
+  - https://your-github-user.github.io
+client_base_url: https://your-github-user.github.io/PixelPandemonium_client
+database_path: ./main.db
+```
+
+5. Start the server:
+
+```bash
+npm start
+```
+
+The server honors Replit’s `PORT` environment variable when present, falling back to `config.yaml` `port` locally. SQLite data is stored in `main.db` in the Repl filesystem.
+
+After Replit starts, update the client `config.yaml`:
+
+```yaml
+server_url: https://your-repl-url.replit.app
+realtime_url: https://your-repl-url.replit.app
+base_url: https://your-github-user.github.io/PixelPandemonium_client
+```
