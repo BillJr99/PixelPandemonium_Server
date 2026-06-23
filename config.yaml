@@ -1,0 +1,17 @@
+port: 8000
+database_path: ./main.db
+allowed_origins:
+  - http://localhost:4000
+  - http://127.0.0.1:4000
+  - https://billmongan.com
+  - https://billjr99.github.io
+  - https://jaheimoates-him.github.io
+client_base_url: http://localhost:4000
+default_expiration_hours: 72
+cleanup_interval_minutes: 60
+download_token: change-me-before-deploying
+legacy_routes_enabled: true
+cloudflare:
+  worker_name: pixel-pandemonium-server
+  d1_database_name: pixel-pandemonium
+  d1_database_id: REPLACE_WITH_D1_DATABASE_ID

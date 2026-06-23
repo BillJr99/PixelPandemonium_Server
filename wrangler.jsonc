@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pixel-pandemonium-server",
+  "main": "src/cloudflare-worker.ts",
+  "compatibility_date": "2026-06-23",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PUBSUB",
+        "class_name": "PubSubRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["PubSubRoom"]
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pixel-pandemonium",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGINS": "http://localhost:4000,https://billmongan.com,https://billjr99.github.io,https://jaheimoates-him.github.io",
+    "CLIENT_BASE_URL": "http://localhost:4000",
+    "DEFAULT_EXPIRATION_HOURS": "72",
+    "DOWNLOAD_TOKEN": "change-me-before-deploying",
+    "LEGACY_ROUTES_ENABLED": "true"
+  }
+}
