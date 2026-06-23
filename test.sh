@@ -72,7 +72,7 @@ curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/retrieve" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length!==0) process.exit(1)"
 
 curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
-  -d 'data=legacy' "$BASE_URL/insert?name=legacy-test" >/dev/null
+  -d '{"data":"legacy"}' "$BASE_URL/insert?name=legacy-test" >/dev/null
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/retrieve?name=legacy-test" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length<1) process.exit(1)"
 
