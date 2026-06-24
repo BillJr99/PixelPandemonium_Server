@@ -86,14 +86,9 @@ Edit `config.yaml` and create a local `.env` before running or deploying.
   lasts indefinitely.
 - `cleanup_interval_minutes`: interval for removing expired replay data.
 - `sqlite_busy_timeout_ms`: how long SQLite waits for a locked database before failing a write/read.
-- `rate_limit_max_per_minute`: maximum API requests per client IP per minute.
-- `write_rate_burst_per_second`: maximum short-burst write requests per client IP per second.
-- `write_rate_max_per_minute`: maximum sustained write requests per client IP per minute.
-- `write_rate_max_per_day`: maximum write requests per client IP per day.
-- `read_rate_max_per_minute`: maximum read requests per client IP per minute.
-- `admin_rate_max_per_minute`: maximum teacher/admin requests per client IP per minute.
-- `max_replay_rows_per_instance`: maximum replay rows stored for one class instance.
-- `max_replay_data_bytes`: maximum size of one replay data payload.
+- `rate_limit_max_per_second`: maximum short-burst API requests per client IP per second.
+- `rate_limit_max_per_minute`: maximum sustained API requests per client IP per minute.
+- `rate_limit_max_per_day`: maximum API requests per client IP per day.
 - `auth_failure_limit`: failed key/password attempts allowed in the auth-failure window.
 - `auth_failure_window_minutes`: minutes in the auth-failure counting window.
 - `auth_ban_days`: days to temporarily ban an IP after too many failures.
@@ -120,13 +115,9 @@ DOWNLOAD_TOKEN=change-me-before-deploying
 AUTH_FAILURE_LIMIT=5
 AUTH_FAILURE_WINDOW_MINUTES=10
 AUTH_BAN_DAYS=1
-WRITE_RATE_BURST_PER_SECOND=3
-WRITE_RATE_MAX_PER_MINUTE=30
-WRITE_RATE_MAX_PER_DAY=1000
-READ_RATE_MAX_PER_MINUTE=120
-ADMIN_RATE_MAX_PER_MINUTE=20
-MAX_REPLAY_ROWS_PER_INSTANCE=10000
-MAX_REPLAY_DATA_BYTES=256
+RATE_LIMIT_MAX_PER_SECOND=3
+RATE_LIMIT_MAX_PER_MINUTE=20
+RATE_LIMIT_MAX_PER_DAY=10000
 LEGACY_ROUTES_ENABLED=false
 ```
 
@@ -141,26 +132,18 @@ Change production secret values before public deployment:
 - `AUTH_FAILURE_LIMIT`: failed key/password attempts before a temporary IP ban.
 - `AUTH_FAILURE_WINDOW_MINUTES`: minutes in the auth-failure counting window.
 - `AUTH_BAN_DAYS`: days to ban an IP after too many failures.
-- `WRITE_RATE_BURST_PER_SECOND`: short write burst allowed from one IP. Default:
+- `RATE_LIMIT_MAX_PER_SECOND`: short request burst allowed from one IP. Default:
   `3`, enough for fast clicking but low enough to stop simple automation.
-- `WRITE_RATE_MAX_PER_MINUTE`: sustained write requests allowed from one IP.
-  Default: `30`.
-- `WRITE_RATE_MAX_PER_DAY`: daily write requests allowed from one IP. Default:
-  `1000`, intentionally high enough for classrooms sharing one school NAT IP.
-- `READ_RATE_MAX_PER_MINUTE`: read requests allowed from one IP. Default: `120`.
-- `ADMIN_RATE_MAX_PER_MINUTE`: teacher/admin requests allowed from one IP.
+- `RATE_LIMIT_MAX_PER_MINUTE`: sustained requests allowed from one IP.
   Default: `20`.
-- `MAX_REPLAY_ROWS_PER_INSTANCE`: replay rows allowed for one class instance.
-  Default: `10000`.
-- `MAX_REPLAY_DATA_BYTES`: maximum stored replay payload size. Default: `256`.
+- `RATE_LIMIT_MAX_PER_DAY`: daily requests allowed from one IP. Default:
+  `10000`, intentionally high enough for classrooms sharing one school NAT IP.
 - `LEGACY_ROUTES_ENABLED`: enables old `/insert` and `/retrieve` routes.
   Recommended Cloudflare production value: `false`.
 
-When a general request rate limit is exceeded, the server should return HTTP
-`429` with a JSON error telling the client to slow down. Write limits apply to
-student replay inserts and other mutating endpoints. Read limits apply to status,
-retrieve, picture, and spec download endpoints. Admin limits apply to teacher,
-admin, listing, key-management, and full download endpoints. These general
+When a general request rate limit is exceeded, the server returns HTTP `429`
+with a JSON error telling the client to slow down. The general IP limits are
+applied as stacked per-second, per-minute, and per-day windows. These general
 limits are separate from authentication-failure bans, which also return `429`
 after too many bad keys or passwords.
 
@@ -276,13 +259,9 @@ DOWNLOAD_TOKEN=change-me-before-deploying
 AUTH_FAILURE_LIMIT=5
 AUTH_FAILURE_WINDOW_MINUTES=10
 AUTH_BAN_DAYS=1
-WRITE_RATE_BURST_PER_SECOND=3
-WRITE_RATE_MAX_PER_MINUTE=30
-WRITE_RATE_MAX_PER_DAY=1000
-READ_RATE_MAX_PER_MINUTE=120
-ADMIN_RATE_MAX_PER_MINUTE=20
-MAX_REPLAY_ROWS_PER_INSTANCE=10000
-MAX_REPLAY_DATA_BYTES=256
+RATE_LIMIT_MAX_PER_SECOND=3
+RATE_LIMIT_MAX_PER_MINUTE=20
+RATE_LIMIT_MAX_PER_DAY=10000
 LEGACY_ROUTES_ENABLED=false
 ```
 
@@ -292,13 +271,9 @@ LEGACY_ROUTES_ENABLED=false
 - `DOWNLOAD_TOKEN` protects the full replay-data export at `/download`.
 - `AUTH_FAILURE_LIMIT`, `AUTH_FAILURE_WINDOW_MINUTES`, and `AUTH_BAN_DAYS`
   control temporary IP bans after repeated bad keys/passwords.
-- `WRITE_RATE_BURST_PER_SECOND`, `WRITE_RATE_MAX_PER_MINUTE`, and
-  `WRITE_RATE_MAX_PER_DAY` control IP-based write throttling. The defaults
+- `RATE_LIMIT_MAX_PER_SECOND`, `RATE_LIMIT_MAX_PER_MINUTE`, and
+  `RATE_LIMIT_MAX_PER_DAY` control stacked IP-based throttling. The defaults
   allow fast human clicking and a full classroom behind one shared school IP.
-- `READ_RATE_MAX_PER_MINUTE` and `ADMIN_RATE_MAX_PER_MINUTE` control IP-based
-  read and teacher/admin throttling.
-- `MAX_REPLAY_ROWS_PER_INSTANCE` and `MAX_REPLAY_DATA_BYTES` cap stored replay
-  growth before writes reach the database.
 - `LEGACY_ROUTES_ENABLED=false` disables the old unauthenticated `/insert` and
   `/retrieve` routes, which is recommended for Cloudflare production.
 

@@ -9,7 +9,9 @@ const DEFAULTS = {
   default_expiration_hours: 8760,
   cleanup_interval_minutes: 60,
   sqlite_busy_timeout_ms: 5000,
-  rate_limit_max_per_minute: 180,
+  rate_limit_max_per_second: 3,
+  rate_limit_max_per_minute: 20,
+  rate_limit_max_per_day: 10000,
   auth_failure_limit: 5,
   auth_failure_window_minutes: 10,
   auth_ban_days: 1,
@@ -102,6 +104,12 @@ function loadConfig(configPath = path.join(process.cwd(), "config.yaml")) {
   if (process.env.PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_MINUTE) {
     config.rate_limit_max_per_minute = Number(process.env.PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_MINUTE);
   }
+  if (process.env.PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_SECOND) {
+    config.rate_limit_max_per_second = Number(process.env.PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_SECOND);
+  }
+  if (process.env.PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_DAY) {
+    config.rate_limit_max_per_day = Number(process.env.PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_DAY);
+  }
   if (process.env.PIXEL_PANDEMONIUM_AUTH_FAILURE_LIMIT) {
     config.auth_failure_limit = Number(process.env.PIXEL_PANDEMONIUM_AUTH_FAILURE_LIMIT);
   }
@@ -125,6 +133,24 @@ function loadConfig(configPath = path.join(process.cwd(), "config.yaml")) {
   }
   if (process.env.DOWNLOAD_TOKEN) {
     config.download_token = process.env.DOWNLOAD_TOKEN;
+  }
+  if (process.env.RATE_LIMIT_MAX_PER_SECOND) {
+    config.rate_limit_max_per_second = Number(process.env.RATE_LIMIT_MAX_PER_SECOND);
+  }
+  if (process.env.RATE_LIMIT_MAX_PER_MINUTE) {
+    config.rate_limit_max_per_minute = Number(process.env.RATE_LIMIT_MAX_PER_MINUTE);
+  }
+  if (process.env.RATE_LIMIT_MAX_PER_DAY) {
+    config.rate_limit_max_per_day = Number(process.env.RATE_LIMIT_MAX_PER_DAY);
+  }
+  if (process.env.WRITE_RATE_BURST_PER_SECOND) {
+    config.rate_limit_max_per_second = Number(process.env.WRITE_RATE_BURST_PER_SECOND);
+  }
+  if (process.env.WRITE_RATE_MAX_PER_MINUTE) {
+    config.rate_limit_max_per_minute = Number(process.env.WRITE_RATE_MAX_PER_MINUTE);
+  }
+  if (process.env.WRITE_RATE_MAX_PER_DAY) {
+    config.rate_limit_max_per_day = Number(process.env.WRITE_RATE_MAX_PER_DAY);
   }
   if (process.env.AUTH_FAILURE_LIMIT) {
     config.auth_failure_limit = Number(process.env.AUTH_FAILURE_LIMIT);

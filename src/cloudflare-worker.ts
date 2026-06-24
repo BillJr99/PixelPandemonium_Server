@@ -1,9 +1,13 @@
 export interface Env {
   DB: D1Database;
   PUBSUB: DurableObjectNamespace<PubSubRoom>;
+  RATELIMIT: DurableObjectNamespace<RateLimitBucket>;
   ALLOWED_ORIGINS: string;
   CLIENT_BASE_URL: string;
   DEFAULT_EXPIRATION_HOURS: string;
+  RATE_LIMIT_MAX_PER_SECOND: string;
+  RATE_LIMIT_MAX_PER_MINUTE: string;
+  RATE_LIMIT_MAX_PER_DAY: string;
   ADMIN_PASSWORD: string;
   DOWNLOAD_TOKEN: string;
   LEGACY_ROUTES_ENABLED: string;
@@ -14,6 +18,15 @@ export interface Env {
 
 interface ClientAttachment {
   channel: string;
+}
+
+interface RateLimitState {
+  secondBucket: number;
+  secondCount: number;
+  minuteBucket: number;
+  minuteCount: number;
+  dayBucket: number;
+  dayCount: number;
 }
 
 const PICTURES = [
@@ -64,6 +77,35 @@ function json(request: Request, env: Env, body: unknown, init: ResponseInit = {}
       ...(init.headers || {})
     }
   });
+}
+
+function clientIp(request: Request): string {
+  return request.headers.get("cf-connecting-ip")
+    || (request.headers.get("x-forwarded-for") || "").split(",")[0].trim()
+    || "unknown";
+}
+
+function positiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.floor(parsed);
+}
+
+async function rateLimitResponse(request: Request, env: Env): Promise<Response | null> {
+  if (request.method === "OPTIONS") return null;
+  const id = env.RATELIMIT.idFromName(clientIp(request));
+  const response = await env.RATELIMIT.get(id).fetch("https://rate-limit/check", {
+    method: "POST",
+    body: JSON.stringify({
+      now: Date.now(),
+      second: positiveInt(env.RATE_LIMIT_MAX_PER_SECOND, 3),
+      minute: positiveInt(env.RATE_LIMIT_MAX_PER_MINUTE, 20),
+      day: positiveInt(env.RATE_LIMIT_MAX_PER_DAY, 10000)
+    })
+  });
+  if (response.status !== 429) return null;
+  const body = await response.json().catch(() => ({ limit: "rate-limit" }));
+  return json(request, env, { error: "Too many requests from this IP. Please slow down and try again later.", ...body }, { status: 429 });
 }
 
 function digitsOnly(value: string): string {
@@ -247,6 +289,8 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request, env) });
+    const limited = await rateLimitResponse(request, env);
+    if (limited) return limited;
     if (url.pathname !== "/health" && url.pathname !== "/faye" && !originAllowed(request, env)) {
       return json(request, env, { error: "Forbidden: Invalid origin" }, { status: 403 });
     }
@@ -491,4 +535,61 @@ export class PubSubRoom implements DurableObject {
       if (target?.channel === channel) client.send(payload);
     }
   }
+}
+
+export class RateLimitBucket implements DurableObject {
+  constructor(private state: DurableObjectState) {}
+
+  async fetch(request: Request): Promise<Response> {
+    const body: any = await request.json().catch(() => ({}));
+    const now = Number(body.now || Date.now());
+    const limits = {
+      second: positiveInt(String(body.second || ""), 3),
+      minute: positiveInt(String(body.minute || ""), 20),
+      day: positiveInt(String(body.day || ""), 10000)
+    };
+    const buckets = {
+      second: Math.floor(now / 1000),
+      minute: Math.floor(now / 60000),
+      day: Math.floor(now / 86400000)
+    };
+    const current = await this.state.storage.get<RateLimitState>("state") || {
+      secondBucket: buckets.second,
+      secondCount: 0,
+      minuteBucket: buckets.minute,
+      minuteCount: 0,
+      dayBucket: buckets.day,
+      dayCount: 0
+    };
+
+    if (current.secondBucket !== buckets.second) {
+      current.secondBucket = buckets.second;
+      current.secondCount = 0;
+    }
+    if (current.minuteBucket !== buckets.minute) {
+      current.minuteBucket = buckets.minute;
+      current.minuteCount = 0;
+    }
+    if (current.dayBucket !== buckets.day) {
+      current.dayBucket = buckets.day;
+      current.dayCount = 0;
+    }
+
+    current.secondCount++;
+    current.minuteCount++;
+    current.dayCount++;
+    await this.state.storage.put("state", current);
+
+    if (current.secondCount > limits.second) return rateLimited("per-second", current.secondCount, limits.second);
+    if (current.minuteCount > limits.minute) return rateLimited("per-minute", current.minuteCount, limits.minute);
+    if (current.dayCount > limits.day) return rateLimited("per-day", current.dayCount, limits.day);
+    return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
+  }
+}
+
+function rateLimited(limit: string, count: number, max: number): Response {
+  return new Response(JSON.stringify({ limit, count, max }), {
+    status: 429,
+    headers: { "content-type": "application/json" }
+  });
 }

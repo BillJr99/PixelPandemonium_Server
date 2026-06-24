@@ -37,7 +37,7 @@ async function waitForHealth(baseUrl, child) {
   throw lastError || new Error("server did not start");
 }
 
-test("server returns 429 when per-IP request rate limit is exceeded", async (t) => {
+async function startServer(t, envLines) {
   const repoRoot = path.resolve(__dirname, "../..");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pixel-rate-limit-"));
   const port = await freePort();
@@ -63,7 +63,7 @@ test("server returns 429 when per-IP request rate limit is exceeded", async (t) 
     "AUTH_FAILURE_LIMIT=5",
     "AUTH_FAILURE_WINDOW_MINUTES=10",
     "AUTH_BAN_DAYS=1",
-    "PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_MINUTE=3",
+    ...envLines,
     ""
   ].join("\n"));
 
@@ -82,14 +82,37 @@ test("server returns 429 when per-IP request rate limit is exceeded", async (t) 
   });
 
   await waitForHealth(baseUrl, child);
+  return { baseUrl };
+}
 
-  const first = await fetch(`${baseUrl}/pictures`, { headers: { Origin: "http://localhost:4000" } });
-  assert.equal(first.status, 200);
+async function expectPicturesRequest(baseUrl, status) {
+  const response = await fetch(`${baseUrl}/pictures`, { headers: { Origin: "http://localhost:4000" } });
+  assert.equal(response.status, status);
+  return response;
+}
 
-  const second = await fetch(`${baseUrl}/pictures`, { headers: { Origin: "http://localhost:4000" } });
-  assert.equal(second.status, 200);
+test("server returns 429 when per-IP minute request rate limit is exceeded", async (t) => {
+  const { baseUrl } = await startServer(t, [
+    "RATE_LIMIT_MAX_PER_SECOND=100",
+    "RATE_LIMIT_MAX_PER_MINUTE=3",
+    "RATE_LIMIT_MAX_PER_DAY=100"
+  ]);
 
-  const limited = await fetch(`${baseUrl}/pictures`, { headers: { Origin: "http://localhost:4000" } });
-  assert.equal(limited.status, 429);
+  await expectPicturesRequest(baseUrl, 200);
+  await expectPicturesRequest(baseUrl, 200);
+  const limited = await expectPicturesRequest(baseUrl, 429);
+  assert.match(await limited.text(), /Too many requests/i);
+});
+
+test("server returns 429 when per-IP daily request rate limit is exceeded", async (t) => {
+  const { baseUrl } = await startServer(t, [
+    "RATE_LIMIT_MAX_PER_SECOND=100",
+    "RATE_LIMIT_MAX_PER_MINUTE=100",
+    "RATE_LIMIT_MAX_PER_DAY=3"
+  ]);
+
+  await expectPicturesRequest(baseUrl, 200);
+  await expectPicturesRequest(baseUrl, 200);
+  const limited = await expectPicturesRequest(baseUrl, 429);
   assert.match(await limited.text(), /Too many requests/i);
 });

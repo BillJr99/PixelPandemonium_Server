@@ -56,6 +56,9 @@ function defaultEnvText() {
     `AUTH_FAILURE_LIMIT=${String(config.auth_failure_limit || 5)}`,
     `AUTH_FAILURE_WINDOW_MINUTES=${String(config.auth_failure_window_minutes || 10)}`,
     `AUTH_BAN_DAYS=${String(config.auth_ban_days || 1)}`,
+    "RATE_LIMIT_MAX_PER_SECOND=3",
+    "RATE_LIMIT_MAX_PER_MINUTE=20",
+    "RATE_LIMIT_MAX_PER_DAY=10000",
     ""
   ].join("\n");
 }
@@ -74,44 +77,58 @@ function parseEnvText(text) {
 
 async function ensureServerEnv() {
   const required = ["ADMIN_PASSWORD", "DEFAULT_TEACHER_KEY", "DOWNLOAD_TOKEN", "AUTH_FAILURE_LIMIT", "AUTH_FAILURE_WINDOW_MINUTES", "AUTH_BAN_DAYS"];
+  const defaulted = {
+    RATE_LIMIT_MAX_PER_SECOND: "3",
+    RATE_LIMIT_MAX_PER_MINUTE: "20",
+    RATE_LIMIT_MAX_PER_DAY: "10000"
+  };
   const file = envPath();
   const existingText = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   const parsed = parseEnvText(existingText);
   const missing = required.filter((key) => !parsed[key]);
-  if (!missing.length) return;
 
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+  if (missing.length && (!process.stdin.isTTY || !process.stdout.isTTY)) {
     throw new Error(`Server .env is missing required key(s): ${missing.join(", ")}. Create ${file} before starting the server.`);
   }
 
-  const readline = require("readline");
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const ask = (question, fallback) => new Promise((resolve) => {
-    rl.question(`${question} [${fallback}]: `, (answer) => resolve(answer.trim() || fallback));
-  });
-
   const next = { ...parsed };
-  for (const key of missing) {
-    const fallback = key === "ADMIN_PASSWORD"
-      ? String(config.admin_password || "admin")
-      : key === "DEFAULT_TEACHER_KEY"
-        ? String(config.default_teacher_key || "teacher")
-        : key === "DOWNLOAD_TOKEN"
-          ? String(config.download_token || "change-me-before-deploying")
-          : key === "AUTH_FAILURE_LIMIT"
-            ? String(config.auth_failure_limit || 5)
-            : key === "AUTH_FAILURE_WINDOW_MINUTES"
-              ? String(config.auth_failure_window_minutes || 10)
-              : String(config.auth_ban_days || 1);
-    next[key] = await ask(key, fallback);
+  let rl = null;
+  if (missing.length) {
+    const readline = require("readline");
+    rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (question, fallback) => new Promise((resolve) => {
+      rl.question(`${question} [${fallback}]: `, (answer) => resolve(answer.trim() || fallback));
+    });
+
+    for (const key of missing) {
+      const fallback = key === "ADMIN_PASSWORD"
+        ? String(config.admin_password || "admin")
+        : key === "DEFAULT_TEACHER_KEY"
+          ? String(config.default_teacher_key || "teacher")
+          : key === "DOWNLOAD_TOKEN"
+            ? String(config.download_token || "change-me-before-deploying")
+            : key === "AUTH_FAILURE_LIMIT"
+              ? String(config.auth_failure_limit || 5)
+              : key === "AUTH_FAILURE_WINDOW_MINUTES"
+                ? String(config.auth_failure_window_minutes || 10)
+                : String(config.auth_ban_days || 1);
+      next[key] = await ask(key, fallback);
+    }
+    rl.close();
   }
-  rl.close();
+  for (const [key, value] of Object.entries(defaulted)) {
+    if (!next[key]) next[key] = value;
+  }
+
+  const writableKeys = required.concat(Object.keys(defaulted));
+  const changed = missing.length || Object.keys(defaulted).some((key) => !parsed[key]);
+  if (!changed) return;
 
   const preserved = existingText.split(/\r?\n/).filter((line) => {
     const key = line.split("=")[0].trim();
-    return key && !required.includes(key);
+    return key && !writableKeys.includes(key);
   });
-  const content = preserved.concat(required.map((key) => `${key}=${next[key]}`), "").join("\n");
+  const content = preserved.concat(writableKeys.map((key) => `${key}=${next[key]}`), "").join("\n");
   fs.writeFileSync(file, content, { mode: 0o600 });
   applyEnvText(content);
 }
@@ -130,6 +147,12 @@ function applyEnvText(text) {
     if (key === "AUTH_FAILURE_LIMIT") config.auth_failure_limit = Number(value);
     if (key === "AUTH_FAILURE_WINDOW_MINUTES") config.auth_failure_window_minutes = Number(value);
     if (key === "AUTH_BAN_DAYS") config.auth_ban_days = Number(value);
+    if (key === "RATE_LIMIT_MAX_PER_SECOND") config.rate_limit_max_per_second = Number(value);
+    if (key === "RATE_LIMIT_MAX_PER_MINUTE") config.rate_limit_max_per_minute = Number(value);
+    if (key === "RATE_LIMIT_MAX_PER_DAY") config.rate_limit_max_per_day = Number(value);
+    if (key === "WRITE_RATE_BURST_PER_SECOND") config.rate_limit_max_per_second = Number(value);
+    if (key === "WRITE_RATE_MAX_PER_MINUTE") config.rate_limit_max_per_minute = Number(value);
+    if (key === "WRITE_RATE_MAX_PER_DAY") config.rate_limit_max_per_day = Number(value);
   }
 }
 
@@ -441,11 +464,21 @@ app.use((req, res, next) => {
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
-app.use(rateLimit({
-  windowMs: 60 * 1000,
-  max: Number(config.rate_limit_max_per_minute || 180),
-  message: "Too many requests from this IP in a short time window. Please try again later."
-}));
+
+function ipRateLimit(windowMs, max, label) {
+  return rateLimit({
+    windowMs,
+    max: Math.max(1, Number(max || 1)),
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.method === "OPTIONS",
+    message: { error: "Too many requests from this IP. Please slow down and try again later.", limit: label }
+  });
+}
+
+app.use(ipRateLimit(1000, config.rate_limit_max_per_second || 3, "per-second"));
+app.use(ipRateLimit(60 * 1000, config.rate_limit_max_per_minute || 20, "per-minute"));
+app.use(ipRateLimit(24 * 60 * 60 * 1000, config.rate_limit_max_per_day || 10000, "per-day"));
 
 app.get("/health", (req, res) => {
   res.json({
@@ -907,7 +940,9 @@ async function start() {
       port: Number(port),
       databasePath: config.database_path,
       sqliteBusyTimeoutMs: Number(config.sqlite_busy_timeout_ms || 5000),
-      rateLimitMaxPerMinute: Number(config.rate_limit_max_per_minute || 180)
+      rateLimitMaxPerSecond: Number(config.rate_limit_max_per_second || 3),
+      rateLimitMaxPerMinute: Number(config.rate_limit_max_per_minute || 20),
+      rateLimitMaxPerDay: Number(config.rate_limit_max_per_day || 10000)
     });
   });
 }
