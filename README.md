@@ -39,6 +39,40 @@ If the client is hosted on a custom domain, use that origin instead. The client
 repository must point `server_url` and `realtime_url` at the Cloudflare Worker
 URL or custom Worker domain.
 
+The guided Cloudflare deployment script can walk through the full server
+deployment:
+
+```bash
+./scripts/deploy-cloudflare.sh
+```
+
+The script checks dependencies, runs `wrangler login`, prompts for the public
+client URL and allowed browser origins, creates or configures the D1 database,
+sets `ADMIN_PASSWORD` and `DOWNLOAD_TOKEN` as Cloudflare Worker secrets, applies
+remote D1 migrations, and runs `wrangler deploy`.
+
+To remove the Cloudflare resources named in `wrangler.jsonc`, run:
+
+```bash
+./scripts/deploy-cloudflare.sh --destroy
+```
+
+Destroy mode logs in, asks you to type `DESTROY`, then deletes the Worker and
+the D1 database named in `wrangler.jsonc`. Deleting the D1 database deletes its
+stored replay and instance data.
+
+For modest classroom or demo usage, this deployment can run on Cloudflare's free
+tier as long as usage stays within Cloudflare's current free limits. At the time
+of writing, Cloudflare lists Workers Free at 100,000 requests per day, D1 Free
+at 5 million rows read per day, 100,000 rows written per day, and 5 GB total
+storage, and Durable Objects are available on Workers Free when using the SQLite
+storage backend. If a free-tier limit is exceeded, Cloudflare documents that
+further operations of that type fail until limits reset; do not assume the
+browser will always receive a simple HTTP `429`. The deploy script never asks
+for credit-card information. Workers Free normally should not require billing
+details, but account signup and verification requirements are controlled by
+Cloudflare and may change.
+
 ## Configuration
 
 Edit `config.yaml` and create a local `.env` before running or deploying.
@@ -96,8 +130,10 @@ Change both production secret values before public deployment:
 Environment variables override `config.yaml`; for example, set `ADMIN_PASSWORD`,
 `PIXEL_PANDEMONIUM_ADMIN_PASSWORD`, `DEFAULT_TEACHER_KEY`, or
 `PIXEL_PANDEMONIUM_DEFAULT_TEACHER_KEY` in production. For Cloudflare Workers,
-also replace the placeholder values in `wrangler.jsonc` or configure secrets in
-the deployed environment.
+use `./scripts/deploy-cloudflare.sh` to configure `wrangler.jsonc`, create or
+reuse the D1 database, and store production secrets with Wrangler. The server
+`.env` file is for local Node/Express runs; it is not the production secret
+store for the deployed Worker.
 
 ## Local Run
 
