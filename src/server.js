@@ -391,11 +391,19 @@ async function requireTeacherAccess(db, req, row) {
 
 async function requireTeacherPortalAccess(db, req) {
   await requireNotAuthBanned(db, req);
-  if (await teacherKeyExists(db, teacherAccessKeyFromRequest(req))) {
+  const teacherAccessKey = teacherAccessKeyFromRequest(req);
+  if (await teacherKeyExists(db, teacherAccessKey)) {
     await clearAuthFailures(db, req);
-    return;
+    return teacherAccessKey;
   }
   await authError(db, req, "Invalid teacher access key", "teacher-access-key");
+}
+
+async function requireTeacherOwnsInstance(db, req, row) {
+  if (isTetrisDemo(row) || adminPasswordFromRequest(req)) return;
+  const teacherAccessKey = teacherAccessKeyFromRequest(req);
+  if (teacherAccessKey && String(row.TEACHER_ACCESS_KEY || "") === String(teacherAccessKey)) return;
+  await authError(db, req, "Teacher key does not own this instance", "teacher-instance-owner");
 }
 
 const corsOptions = {
@@ -467,9 +475,12 @@ app.get("/pictures", async (req, res) => {
 });
 
 async function requireAdminOrTeacherPortalAccess(db, req) {
-  if (isTetrisDemoCode(req.params && req.params.code)) return;
-  if (adminPasswordFromRequest(req)) return requireAdminPassword(db, req);
-  return requireTeacherPortalAccess(db, req);
+  if (isTetrisDemoCode(req.params && req.params.code)) return { mode: "demo", teacherAccessKey: "" };
+  if (adminPasswordFromRequest(req)) {
+    await requireAdminPassword(db, req);
+    return { mode: "admin", teacherAccessKey: "" };
+  }
+  return { mode: "teacher", teacherAccessKey: await requireTeacherPortalAccess(db, req) };
 }
 
 app.get("/teacher/validate", async (req, res) => {
@@ -566,7 +577,8 @@ app.post("/instance/create", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
-    await requireAdminOrTeacherPortalAccess(db, req);
+    const access = await requireAdminOrTeacherPortalAccess(db, req);
+    if (access.mode === "teacher") req.body.teacherAccessKey = access.teacherAccessKey;
     const result = await createInstance(db, req.body, config);
     res.status(201).json({ ...result, ...buildUrls(result.instanceCode, result.adminCode, result.accessKey, result.teacherKey) });
   } catch (err) {
@@ -605,8 +617,8 @@ app.get("/teacher/instances", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
-    await requireTeacherPortalAccess(db, req);
-    const rows = await all(db, "SELECT * FROM INSTANCES WHERE ACTIVE = 1 ORDER BY CREATED_AT DESC, ID DESC");
+    const teacherAccessKey = await requireTeacherPortalAccess(db, req);
+    const rows = await all(db, "SELECT * FROM INSTANCES WHERE ACTIVE = 1 AND TEACHER_ACCESS_KEY = ? ORDER BY CREATED_AT DESC, ID DESC", [teacherAccessKey]);
     const instances = [];
     for (const row of rows) {
       instances.push({
@@ -689,6 +701,7 @@ app.post("/instance/:code/reset", async (req, res) => {
     const adminCode = req.body.adminCode || req.query.admin;
     await requireAdminOrTeacherPortalAccess(db, req);
     const row = await requireAdminInstance(db, req.params.code, adminCode, req);
+    await requireTeacherOwnsInstance(db, req, row);
     await requireTeacherAccess(db, req, row);
     const result = await resetInstance(db, req.params.code, adminCode);
     await clearAuthFailures(db, req);
@@ -706,6 +719,7 @@ app.get("/instance/:code/admin", async (req, res) => {
     await ensureMigrated(db);
     await requireAdminOrTeacherPortalAccess(db, req);
     const row = await requireAdminInstance(db, req.params.code, req.query.admin, req);
+    await requireTeacherOwnsInstance(db, req, row);
     await requireTeacherAccess(db, req, row);
     await clearAuthFailures(db, req);
     const rows = await all(db, "SELECT * FROM DATA WHERE INSTANCE_CODE = ? ORDER BY TIMESTAMP ASC, ID ASC", [req.params.code]);

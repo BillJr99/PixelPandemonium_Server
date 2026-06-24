@@ -64,6 +64,10 @@ DUP_TEACHER_KEY_STATUS="$(curl -s -o /tmp/pixel-duplicate-teacher-key.json -w "%
   -d "{\"teacherKey\":\"teacher\",\"adminPassword\":\"$ADMIN_PASSWORD\"}" \
   "$BASE_URL/teacher-keys")"
 test "$DUP_TEACHER_KEY_STATUS" = "409"
+SECOND_TEACHER_KEY_STATUS="$(curl -s -o /tmp/pixel-second-teacher-key.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d "{\"teacherKey\":\"teacher-two\",\"label\":\"Second Teacher\",\"adminPassword\":\"$ADMIN_PASSWORD\"}" \
+  "$BASE_URL/teacher-keys")"
+test "$SECOND_TEACHER_KEY_STATUS" = "201" -o "$SECOND_TEACHER_KEY_STATUS" = "409"
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/pictures" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length < 16 || !d.some(p => p.id === 'tetris')) process.exit(1)"
 
@@ -81,7 +85,7 @@ CREATE_A="$(curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d '{"pictureId":"tetris","teacherName":"Ada Lovelace","dateTime":"2026-06-23T10:30:00","expirationHours":2,"teacherAccessKey":"teacher"}' \
   "$BASE_URL/instance/create")"
 CREATE_B="$(curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
-  -d '{"pictureId":"eagles","teacherName":"Grace Hopper","dateTime":"2026-06-23T11:30:00","expirationHours":2,"teacherAccessKey":"teacher"}' \
+  -d '{"pictureId":"eagles","teacherName":"Grace Hopper","dateTime":"2026-06-23T11:30:00","expirationHours":2,"teacherAccessKey":"teacher-two"}' \
   "$BASE_URL/instance/create")"
 CREATE_CUSTOM="$(curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d "{\"pictureId\":\"$CUSTOM_ID\",\"teacherName\":\"Custom Teacher\",\"dateTime\":\"2026-06-23T12:30:00\",\"expirationHours\":2,\"teacherAccessKey\":\"teacher\"}" \
@@ -102,6 +106,10 @@ node -e "const data=JSON.parse(process.argv[1]); if(!/instructions\\.html\\?inst
 
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instances?adminPassword=$ADMIN_PASSWORD" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!Array.isArray(d.instances) || !d.instances.some(i => i.instanceCode === 'tetris' && !/[?&]key=/.test(i.studentUrl)) || !d.instances.some(i => i.instanceCode === process.argv[1] && i.accessKey && i.teacherKey && /[?&]key=/.test(i.studentUrl))) process.exit(1)" "$CODE_A"
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/teacher/instances?teacherAccessKey=teacher" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!Array.isArray(d.instances) || !d.instances.some(i => i.instanceCode === process.argv[1]) || d.instances.some(i => i.instanceCode === process.argv[2])) process.exit(1)" "$CODE_A" "$CODE_B"
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/teacher/instances?teacherAccessKey=teacher-two" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!Array.isArray(d.instances) || !d.instances.some(i => i.instanceCode === process.argv[1]) || d.instances.some(i => i.instanceCode === process.argv[2])) process.exit(1)" "$CODE_B" "$CODE_A"
 
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/tetris/status" | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!d.valid || d.instanceCode!=='tetris' || d.pictureId!=='tetris') process.exit(1)"
 curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
@@ -145,6 +153,8 @@ curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_B/retrieve?key=$KEY_B" 
 
 MISSING_TEACHER_STATUS="$(curl -s -o /tmp/pixel-missing-teacher-key.json -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_B/admin?admin=$ADMIN_B&adminPassword=$ADMIN_PASSWORD")"
 test "$MISSING_TEACHER_STATUS" = "403"
+WRONG_OWNER_ADMIN_STATUS="$(curl -s -o /tmp/pixel-wrong-owner-admin.json -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/admin?admin=$ADMIN_A&teacherKey=$TEACHER_KEY_A&teacherAccessKey=teacher-two")"
+test "$WRONG_OWNER_ADMIN_STATUS" = "403"
 ADMIN_VIEW="$(curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/admin?admin=$ADMIN_A&teacherKey=$TEACHER_KEY_A&adminPassword=$ADMIN_PASSWORD")"
 EVENT_ID="$(node -e "const data=JSON.parse(process.argv[1]); if(data.rows.length!==1) process.exit(1); console.log(data.rows[0].ID)" "$ADMIN_VIEW")"
 curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
@@ -186,6 +196,11 @@ TETRIS_ROTATE_STATUS="$(curl -s -o /tmp/pixel-tetris-rotate.json -w "%{http_code
   -d '{"keyType":"student"}' \
   "$BASE_URL/instance/tetris/rotate-key")"
 test "$TETRIS_ROTATE_STATUS" = "403"
+
+WRONG_OWNER_RESET_STATUS="$(curl -s -o /tmp/pixel-wrong-owner-reset.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d "{\"adminCode\":\"$ADMIN_A\",\"teacherKey\":\"$TEACHER_KEY_A\",\"teacherAccessKey\":\"teacher-two\"}" \
+  "$BASE_URL/instance/$CODE_A/reset")"
+test "$WRONG_OWNER_RESET_STATUS" = "403"
 
 curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d "{\"adminCode\":\"$ADMIN_A\",\"teacherKey\":\"$TEACHER_KEY_A\",\"adminPassword\":\"$ADMIN_PASSWORD\"}" \

@@ -118,9 +118,12 @@ Teacher portal APIs accept a global teacher key as `teacherAccessKey` in the
 JSON body, as a `teacherAccessKey` query parameter, or as the
 `X-Teacher-Access-Key` header. A global teacher key is required to create
 instances from the teacher-facing create page or to list/administer existing
-non-demo instances from the teacher dashboard. The server seeds
-`DEFAULT_TEACHER_KEY=teacher` locally unless changed, and re-adds that key on
-startup if it is missing from the database.
+non-demo instances from the teacher dashboard. Instances created through a
+teacher key are owned by that teacher key. Teacher-key access can list, inspect,
+animate, and reset only those owned instances; admin-password access can still
+list and administer all instances. The server seeds `DEFAULT_TEACHER_KEY=teacher`
+locally unless changed, and re-adds that key on startup if it is missing from
+the database.
 
 Student/status/replay APIs require the per-instance class key as `key=...`,
 `accessKey` in the JSON body, or the `X-Instance-Key` header. Teacher/admin
@@ -370,6 +373,7 @@ curl "http://localhost:8000/teacher/instances?teacherAccessKey=teacher" \
 ```
 
 This powers the teacher dashboard after a global teacher key is accepted.
+The response includes only instances created by that same global teacher key.
 
 ### Manage global teacher keys
 
@@ -455,7 +459,8 @@ The browser catches most typos locally, and the server still validates code form
 - Teacher/admin URLs include a separate teacher key and cannot be used with only
   the guessed instance/admin code.
 - A global teacher key is required to create instances or use the teacher
-  dashboard for non-demo instances.
+  dashboard for non-demo instances, and teachers only see/administer instances
+  created with that same global teacher key.
 - Students submit tile pixels into that instance only.
 - The teacher opens the replay URL and watches live updates.
 - A teacher resets an instance for practice or reuse.

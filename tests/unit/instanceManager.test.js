@@ -86,7 +86,8 @@ test("createInstance stores active instance metadata", async () => {
     pictureId: "tetris",
     teacherName: "Ada Lovelace",
     dateTime: "2026-06-23T10:30:00",
-    expirationHours: 1
+    expirationHours: 1,
+    teacherAccessKey: "teacher"
   }, config);
 
   const row = await getInstance(db, created.instanceCode);
@@ -96,6 +97,7 @@ test("createInstance stores active instance metadata", async () => {
   assert.match(created.teacherKey, /^[A-F0-9]{16}$/);
   assert.equal(row.ACCESS_KEY, created.accessKey);
   assert.equal(row.TEACHER_KEY, created.teacherKey);
+  assert.equal(row.TEACHER_ACCESS_KEY, "teacher");
   assert.equal(row.TEACHER_NAME, "Ada Lovelace");
   assert.deepEqual(await requireActiveInstance(db, created.instanceCode), row);
   db.close();

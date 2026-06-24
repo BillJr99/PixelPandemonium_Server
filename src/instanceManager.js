@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS INSTANCES (
   INSTANCE_NAME TEXT UNIQUE NOT NULL,
   ACCESS_KEY TEXT NOT NULL,
   TEACHER_KEY TEXT NOT NULL,
+  TEACHER_ACCESS_KEY TEXT,
   PICTURE_ID TEXT NOT NULL,
   TEACHER_NAME TEXT NOT NULL,
   REQUESTED_DATETIME TEXT NOT NULL,
@@ -68,6 +69,7 @@ const CREATE_INDEXES = [
   "CREATE INDEX IF NOT EXISTS IDX_DATA_INSTANCE_TIMESTAMP ON DATA (INSTANCE_CODE, TIMESTAMP, ID)",
   "CREATE INDEX IF NOT EXISTS IDX_INSTANCES_CODE ON INSTANCES (INSTANCE_CODE)",
   "CREATE INDEX IF NOT EXISTS IDX_INSTANCES_ADMIN_CODE ON INSTANCES (ADMIN_CODE)",
+  "CREATE INDEX IF NOT EXISTS IDX_INSTANCES_TEACHER_ACCESS_KEY ON INSTANCES (TEACHER_ACCESS_KEY)",
   "CREATE UNIQUE INDEX IF NOT EXISTS IDX_INSTANCES_NAME_UNIQUE ON INSTANCES (INSTANCE_NAME)",
   "CREATE INDEX IF NOT EXISTS IDX_AUTH_FAILURES_BANNED_UNTIL ON AUTH_FAILURES (BANNED_UNTIL)",
   "CREATE INDEX IF NOT EXISTS IDX_PICTURES_ENABLED ON PICTURES (ENABLED, ID)",
@@ -190,6 +192,9 @@ async function migrate(db) {
     if (!/duplicate column/i.test(err.message)) throw err;
   });
   await run(db, "UPDATE INSTANCES SET TEACHER_KEY = ADMIN_CODE WHERE TEACHER_KEY IS NULL OR TEACHER_KEY = ''");
+  await run(db, "ALTER TABLE INSTANCES ADD COLUMN TEACHER_ACCESS_KEY TEXT").catch((err) => {
+    if (!/duplicate column/i.test(err.message)) throw err;
+  });
   for (const sql of [
     "ALTER TABLE PICTURES ADD COLUMN CUSTOM INTEGER DEFAULT 0 NOT NULL",
     "ALTER TABLE PICTURES ADD COLUMN SPEC_JSON TEXT",
@@ -342,6 +347,7 @@ async function createInstance(db, input, config) {
   const dateTime = String(input.dateTime || "").trim();
   const expirationHours = Number(input.expirationHours || config.default_expiration_hours || 8760);
   const requestedInstanceName = String(input.instanceName || "").trim();
+  const teacherAccessKey = String(input.teacherAccessKey || "").trim() || null;
 
   if (!pictureId || !teacherName || !dateTime) {
     const err = new Error("Missing: pictureId, teacherName, dateTime");
@@ -389,9 +395,9 @@ async function createInstance(db, input, config) {
   await run(
     db,
     `INSERT INTO INSTANCES
-      (INSTANCE_CODE, ADMIN_CODE, INSTANCE_NAME, ACCESS_KEY, TEACHER_KEY, PICTURE_ID, TEACHER_NAME, REQUESTED_DATETIME, EXPIRES_AT)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [instanceCode, adminCode, instanceName, accessKey, teacherKey, pictureId, teacherName, dateTime, expiresAt]
+      (INSTANCE_CODE, ADMIN_CODE, INSTANCE_NAME, ACCESS_KEY, TEACHER_KEY, TEACHER_ACCESS_KEY, PICTURE_ID, TEACHER_NAME, REQUESTED_DATETIME, EXPIRES_AT)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [instanceCode, adminCode, instanceName, accessKey, teacherKey, teacherAccessKey, pictureId, teacherName, dateTime, expiresAt]
   );
 
   return { instanceCode, adminCode, accessKey, teacherKey, instanceName, pictureId, teacherName, requestedDateTime: dateTime, expiresAt };
