@@ -54,6 +54,15 @@ CREATE TABLE IF NOT EXISTS AUTH_FAILURES (
 );
 `;
 
+const CREATE_TEACHER_KEYS_TABLE = `
+CREATE TABLE IF NOT EXISTS TEACHER_KEYS (
+  ID INTEGER PRIMARY KEY AUTOINCREMENT,
+  TEACHER_KEY TEXT UNIQUE NOT NULL,
+  LABEL TEXT,
+  CREATED_AT TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+`;
+
 const CREATE_INDEXES = [
   "CREATE INDEX IF NOT EXISTS IDX_DATA_NAME_TIMESTAMP ON DATA (NAME, TIMESTAMP)",
   "CREATE INDEX IF NOT EXISTS IDX_DATA_INSTANCE_TIMESTAMP ON DATA (INSTANCE_CODE, TIMESTAMP, ID)",
@@ -61,7 +70,8 @@ const CREATE_INDEXES = [
   "CREATE INDEX IF NOT EXISTS IDX_INSTANCES_ADMIN_CODE ON INSTANCES (ADMIN_CODE)",
   "CREATE UNIQUE INDEX IF NOT EXISTS IDX_INSTANCES_NAME_UNIQUE ON INSTANCES (INSTANCE_NAME)",
   "CREATE INDEX IF NOT EXISTS IDX_AUTH_FAILURES_BANNED_UNTIL ON AUTH_FAILURES (BANNED_UNTIL)",
-  "CREATE INDEX IF NOT EXISTS IDX_PICTURES_ENABLED ON PICTURES (ENABLED, ID)"
+  "CREATE INDEX IF NOT EXISTS IDX_PICTURES_ENABLED ON PICTURES (ENABLED, ID)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS IDX_TEACHER_KEYS_KEY_UNIQUE ON TEACHER_KEYS (TEACHER_KEY)"
 ];
 
 function normalizeToken(value, fallback, length) {
@@ -161,6 +171,7 @@ async function migrate(db) {
   await run(db, CREATE_INSTANCES_TABLE);
   await run(db, CREATE_PICTURES_TABLE);
   await run(db, CREATE_AUTH_FAILURES_TABLE);
+  await run(db, CREATE_TEACHER_KEYS_TABLE);
   await run(db, "ALTER TABLE DATA ADD COLUMN INSTANCE_CODE TEXT").catch((err) => {
     if (!/duplicate column/i.test(err.message)) throw err;
   });
@@ -192,6 +203,46 @@ async function migrate(db) {
   for (const sql of CREATE_INDEXES) await run(db, sql);
   await seedPictures(db);
   await seedDemoInstances(db);
+}
+
+async function ensureTeacherKey(db, teacherKey, label = "Default Teacher") {
+  const key = String(teacherKey || "").trim();
+  if (!key) return null;
+  await run(
+    db,
+    `INSERT INTO TEACHER_KEYS (TEACHER_KEY, LABEL)
+     VALUES (?, ?)
+     ON CONFLICT(TEACHER_KEY) DO UPDATE SET LABEL = COALESCE(TEACHER_KEYS.LABEL, excluded.LABEL)`,
+    [key, label]
+  );
+  return get(db, "SELECT ID as id, TEACHER_KEY as teacherKey, LABEL as label, CREATED_AT as createdAt FROM TEACHER_KEYS WHERE TEACHER_KEY = ?", [key]);
+}
+
+async function listTeacherKeys(db) {
+  return all(db, "SELECT ID as id, TEACHER_KEY as teacherKey, LABEL as label, CREATED_AT as createdAt FROM TEACHER_KEYS ORDER BY CREATED_AT ASC, ID ASC");
+}
+
+async function createTeacherKey(db, teacherKey, label = "") {
+  const key = String(teacherKey || "").trim();
+  if (!key) {
+    const err = new Error("teacherKey is required");
+    err.status = 400;
+    throw err;
+  }
+  const existing = await get(db, "SELECT ID FROM TEACHER_KEYS WHERE TEACHER_KEY = ?", [key]);
+  if (existing) {
+    const err = new Error("Teacher key already exists");
+    err.status = 409;
+    throw err;
+  }
+  await run(db, "INSERT INTO TEACHER_KEYS (TEACHER_KEY, LABEL) VALUES (?, ?)", [key, String(label || "").trim()]);
+  return get(db, "SELECT ID as id, TEACHER_KEY as teacherKey, LABEL as label, CREATED_AT as createdAt FROM TEACHER_KEYS WHERE TEACHER_KEY = ?", [key]);
+}
+
+async function teacherKeyExists(db, teacherKey) {
+  const key = String(teacherKey || "").trim();
+  if (!key) return false;
+  return !!(await get(db, "SELECT ID FROM TEACHER_KEYS WHERE TEACHER_KEY = ?", [key]));
 }
 
 async function seedPictures(db) {
@@ -407,6 +458,7 @@ module.exports = {
   CREATE_INSTANCES_TABLE,
   CREATE_PICTURES_TABLE,
   CREATE_AUTH_FAILURES_TABLE,
+  CREATE_TEACHER_KEYS_TABLE,
   CREATE_INDEXES,
   migrate,
   seedPictures,
@@ -416,6 +468,10 @@ module.exports = {
   createCustomPicture,
   customPictureSpecJs,
   customPictureArtifacts,
+  ensureTeacherKey,
+  listTeacherKeys,
+  createTeacherKey,
+  teacherKeyExists,
   createInstance,
   getInstance,
   requireActiveInstance,

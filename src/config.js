@@ -14,6 +14,7 @@ const DEFAULTS = {
   auth_failure_window_minutes: 10,
   auth_ban_days: 1,
   admin_password: "admin",
+  default_teacher_key: "teacher",
   download_token: "change-me-before-deploying",
   legacy_routes_enabled: true
 };
@@ -113,8 +114,14 @@ function loadConfig(configPath = path.join(process.cwd(), "config.yaml")) {
   if (process.env.PIXEL_PANDEMONIUM_ADMIN_PASSWORD) {
     config.admin_password = process.env.PIXEL_PANDEMONIUM_ADMIN_PASSWORD;
   }
+  if (process.env.PIXEL_PANDEMONIUM_DEFAULT_TEACHER_KEY) {
+    config.default_teacher_key = process.env.PIXEL_PANDEMONIUM_DEFAULT_TEACHER_KEY;
+  }
   if (process.env.ADMIN_PASSWORD) {
     config.admin_password = process.env.ADMIN_PASSWORD;
+  }
+  if (process.env.DEFAULT_TEACHER_KEY) {
+    config.default_teacher_key = process.env.DEFAULT_TEACHER_KEY;
   }
   if (process.env.DOWNLOAD_TOKEN) {
     config.download_token = process.env.DOWNLOAD_TOKEN;

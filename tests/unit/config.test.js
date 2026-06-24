@@ -11,6 +11,7 @@ test("loadConfig reads auth throttling names from server .env", () => {
   fs.writeFileSync(configPath, "port: 8000\n");
   fs.writeFileSync(path.join(dir, ".env"), [
     "ADMIN_PASSWORD=test-admin",
+    "DEFAULT_TEACHER_KEY=test-teacher",
     "DOWNLOAD_TOKEN=test-token",
     "AUTH_FAILURE_LIMIT=7",
     "AUTH_FAILURE_WINDOW_MINUTES=12",
@@ -20,6 +21,7 @@ test("loadConfig reads auth throttling names from server .env", () => {
 
   const previous = {
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD,
+    DEFAULT_TEACHER_KEY: process.env.DEFAULT_TEACHER_KEY,
     DOWNLOAD_TOKEN: process.env.DOWNLOAD_TOKEN,
     AUTH_FAILURE_LIMIT: process.env.AUTH_FAILURE_LIMIT,
     AUTH_FAILURE_WINDOW_MINUTES: process.env.AUTH_FAILURE_WINDOW_MINUTES,
@@ -29,6 +31,7 @@ test("loadConfig reads auth throttling names from server .env", () => {
   try {
     const config = loadConfig(configPath);
     assert.equal(config.admin_password, "test-admin");
+    assert.equal(config.default_teacher_key, "test-teacher");
     assert.equal(config.download_token, "test-token");
     assert.equal(config.auth_failure_limit, 7);
     assert.equal(config.auth_failure_window_minutes, 12);

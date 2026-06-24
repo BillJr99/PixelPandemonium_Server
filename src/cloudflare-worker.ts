@@ -343,16 +343,7 @@ export default {
       }
 
       if ((action === "deactivate" || action === "delete") && request.method === "POST") {
-        if (code === "tetris") return json(request, env, { error: "The public Tetris demo cannot be deactivated" }, { status: 403 });
-        const body = await readRequestBody(request);
-        const passwordError = adminPasswordError(request, env, url, body);
-        if (passwordError) return passwordError;
-        const found = await adminInstance(env, code, body.adminCode || url.searchParams.get("admin"));
-        if (found.error) return json(request, env, { error: found.error }, { status: found.status });
-        const teacherError = teacherAccessError(request, env, url, found.row, body);
-        if (teacherError) return teacherError;
-        const result = await env.DB.prepare("UPDATE INSTANCES SET ACTIVE = 0 WHERE INSTANCE_CODE = ?").bind(code).run();
-        return json(request, env, { status: "deactivated", deactivatedInstances: result.meta.changes || 0 });
+        return json(request, env, { error: "Instances cannot be deactivated or deleted" }, { status: 403 });
       }
 
       if (action === "rotate-key" && request.method === "POST") {

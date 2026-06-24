@@ -21,6 +21,10 @@ const {
   createCustomPicture,
   customPictureSpecJs,
   customPictureArtifacts,
+  ensureTeacherKey,
+  listTeacherKeys,
+  createTeacherKey,
+  teacherKeyExists,
   run,
   get,
   all
@@ -47,6 +51,7 @@ function envPath() {
 function defaultEnvText() {
   return [
     `ADMIN_PASSWORD=${String(config.admin_password || "admin")}`,
+    `DEFAULT_TEACHER_KEY=${String(config.default_teacher_key || "teacher")}`,
     `DOWNLOAD_TOKEN=${String(config.download_token || "change-me-before-deploying")}`,
     `AUTH_FAILURE_LIMIT=${String(config.auth_failure_limit || 5)}`,
     `AUTH_FAILURE_WINDOW_MINUTES=${String(config.auth_failure_window_minutes || 10)}`,
@@ -68,7 +73,7 @@ function parseEnvText(text) {
 }
 
 async function ensureServerEnv() {
-  const required = ["ADMIN_PASSWORD", "DOWNLOAD_TOKEN", "AUTH_FAILURE_LIMIT", "AUTH_FAILURE_WINDOW_MINUTES", "AUTH_BAN_DAYS"];
+  const required = ["ADMIN_PASSWORD", "DEFAULT_TEACHER_KEY", "DOWNLOAD_TOKEN", "AUTH_FAILURE_LIMIT", "AUTH_FAILURE_WINDOW_MINUTES", "AUTH_BAN_DAYS"];
   const file = envPath();
   const existingText = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   const parsed = parseEnvText(existingText);
@@ -89,13 +94,15 @@ async function ensureServerEnv() {
   for (const key of missing) {
     const fallback = key === "ADMIN_PASSWORD"
       ? String(config.admin_password || "admin")
-      : key === "DOWNLOAD_TOKEN"
-        ? String(config.download_token || "change-me-before-deploying")
-        : key === "AUTH_FAILURE_LIMIT"
-          ? String(config.auth_failure_limit || 5)
-          : key === "AUTH_FAILURE_WINDOW_MINUTES"
-            ? String(config.auth_failure_window_minutes || 10)
-            : String(config.auth_ban_days || 1);
+      : key === "DEFAULT_TEACHER_KEY"
+        ? String(config.default_teacher_key || "teacher")
+        : key === "DOWNLOAD_TOKEN"
+          ? String(config.download_token || "change-me-before-deploying")
+          : key === "AUTH_FAILURE_LIMIT"
+            ? String(config.auth_failure_limit || 5)
+            : key === "AUTH_FAILURE_WINDOW_MINUTES"
+              ? String(config.auth_failure_window_minutes || 10)
+              : String(config.auth_ban_days || 1);
     next[key] = await ask(key, fallback);
   }
   rl.close();
@@ -118,6 +125,7 @@ function applyEnvText(text) {
     const key = trimmed.slice(0, index).trim();
     const value = trimmed.slice(index + 1).trim().replace(/^["']|["']$/g, "");
     if (key === "ADMIN_PASSWORD") config.admin_password = value;
+    if (key === "DEFAULT_TEACHER_KEY") config.default_teacher_key = value;
     if (key === "DOWNLOAD_TOKEN") config.download_token = value;
     if (key === "AUTH_FAILURE_LIMIT") config.auth_failure_limit = Number(value);
     if (key === "AUTH_FAILURE_WINDOW_MINUTES") config.auth_failure_window_minutes = Number(value);
@@ -143,6 +151,7 @@ async function ensureMigrated(db) {
   if (!migrationPromise) {
     migrationPromise = (async () => {
       await migrate(db);
+      await ensureTeacherKey(db, config.default_teacher_key || "teacher", "Default Teacher");
       await run(db, "PRAGMA journal_mode = WAL").catch((err) => {
         log("warn", "Could not enable SQLite WAL mode", { error: err.message });
       });
@@ -359,6 +368,10 @@ function teacherKeyFromRequest(req) {
   return req.get("x-teacher-key") || (req.body && req.body.teacherKey) || req.query.teacherKey || "";
 }
 
+function teacherAccessKeyFromRequest(req) {
+  return req.get("x-teacher-access-key") || (req.body && req.body.teacherAccessKey) || req.query.teacherAccessKey || "";
+}
+
 async function requireInstanceAccess(db, req, row) {
   if (isTetrisDemo(row)) return;
   await requireNotAuthBanned(db, req);
@@ -376,13 +389,22 @@ async function requireTeacherAccess(db, req, row) {
   await authError(db, req, "Invalid teacher key", "teacher-key");
 }
 
+async function requireTeacherPortalAccess(db, req) {
+  await requireNotAuthBanned(db, req);
+  if (await teacherKeyExists(db, teacherAccessKeyFromRequest(req))) {
+    await clearAuthFailures(db, req);
+    return;
+  }
+  await authError(db, req, "Invalid teacher access key", "teacher-access-key");
+}
+
 const corsOptions = {
   origin(origin, callback) {
     if (originAllowed(origin)) callback(null, true);
     else callback(new Error(`Not allowed by CORS: ${origin}`));
   },
   methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "X-Instance-Key", "X-Teacher-Key", "X-Admin-Password"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "X-Instance-Key", "X-Teacher-Key", "X-Teacher-Access-Key", "X-Admin-Password"],
   credentials: true
 };
 
@@ -444,11 +466,58 @@ app.get("/pictures", async (req, res) => {
   }
 });
 
-app.post("/pictures/custom", async (req, res) => {
+async function requireAdminOrTeacherPortalAccess(db, req) {
+  if (isTetrisDemoCode(req.params && req.params.code)) return;
+  if (adminPasswordFromRequest(req)) return requireAdminPassword(db, req);
+  return requireTeacherPortalAccess(db, req);
+}
+
+app.get("/teacher/validate", async (req, res) => {
+  const db = openDb();
+  try {
+    await ensureMigrated(db);
+    await requireTeacherPortalAccess(db, req);
+    res.json({ valid: true });
+  } catch (err) {
+    errorResponse(req, res, err);
+  } finally {
+    db.close();
+  }
+});
+
+app.get("/teacher-keys", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
     await requireAdminPassword(db, req);
+    res.json({ teacherKeys: await listTeacherKeys(db) });
+  } catch (err) {
+    errorResponse(req, res, err);
+  } finally {
+    db.close();
+  }
+});
+
+app.post("/teacher-keys", async (req, res) => {
+  const db = openDb();
+  try {
+    await ensureMigrated(db);
+    await requireAdminPassword(db, req);
+    const created = await createTeacherKey(db, req.body.teacherKey, req.body.label);
+    await clearAuthFailures(db, req);
+    res.status(201).json(created);
+  } catch (err) {
+    errorResponse(req, res, err);
+  } finally {
+    db.close();
+  }
+});
+
+app.post("/pictures/custom", async (req, res) => {
+  const db = openDb();
+  try {
+    await ensureMigrated(db);
+    await requireAdminOrTeacherPortalAccess(db, req);
     const result = await createCustomPicture(db, req.body || {});
     res.status(201).json({
       id: result.id,
@@ -497,6 +566,7 @@ app.post("/instance/create", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
+    await requireAdminOrTeacherPortalAccess(db, req);
     const result = await createInstance(db, req.body, config);
     res.status(201).json({ ...result, ...buildUrls(result.instanceCode, result.adminCode, result.accessKey, result.teacherKey) });
   } catch (err) {
@@ -510,7 +580,32 @@ app.get("/instances", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
-    await requireAdminPassword(db, req);
+    await requireAdminOrTeacherPortalAccess(db, req);
+    const rows = await all(db, "SELECT * FROM INSTANCES WHERE ACTIVE = 1 ORDER BY CREATED_AT DESC, ID DESC");
+    const instances = [];
+    for (const row of rows) {
+      instances.push({
+        ...(await publicInstanceWithPicture(db, row)),
+        adminCode: row.ADMIN_CODE,
+        accessKey: row.ACCESS_KEY,
+        teacherKey: row.TEACHER_KEY,
+        ...buildUrls(row.INSTANCE_CODE, row.ADMIN_CODE, row.ACCESS_KEY, row.TEACHER_KEY)
+      });
+    }
+    await clearAuthFailures(db, req);
+    res.json({ instances });
+  } catch (err) {
+    errorResponse(req, res, err);
+  } finally {
+    db.close();
+  }
+});
+
+app.get("/teacher/instances", async (req, res) => {
+  const db = openDb();
+  try {
+    await ensureMigrated(db);
+    await requireTeacherPortalAccess(db, req);
     const rows = await all(db, "SELECT * FROM INSTANCES WHERE ACTIVE = 1 ORDER BY CREATED_AT DESC, ID DESC");
     const instances = [];
     for (const row of rows) {
@@ -592,7 +687,7 @@ app.post("/instance/:code/reset", async (req, res) => {
   try {
     await ensureMigrated(db);
     const adminCode = req.body.adminCode || req.query.admin;
-    await requireAdminPassword(db, req);
+    await requireAdminOrTeacherPortalAccess(db, req);
     const row = await requireAdminInstance(db, req.params.code, adminCode, req);
     await requireTeacherAccess(db, req, row);
     const result = await resetInstance(db, req.params.code, adminCode);
@@ -609,7 +704,7 @@ app.get("/instance/:code/admin", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
-    await requireAdminPassword(db, req);
+    await requireAdminOrTeacherPortalAccess(db, req);
     const row = await requireAdminInstance(db, req.params.code, req.query.admin, req);
     await requireTeacherAccess(db, req, row);
     await clearAuthFailures(db, req);
@@ -623,23 +718,7 @@ app.get("/instance/:code/admin", async (req, res) => {
 });
 
 async function deactivateInstance(req, res) {
-  const db = openDb();
-  try {
-    await ensureMigrated(db);
-    if (isTetrisDemoCode(req.params.code)) {
-      return res.status(403).json({ error: "The public Tetris demo cannot be deactivated" });
-    }
-    await requireAdminPassword(db, req);
-    const row = await requireAdminInstance(db, req.params.code, req.body.adminCode || req.query.admin, req);
-    await requireTeacherAccess(db, req, row);
-    await clearAuthFailures(db, req);
-    const result = await run(db, "UPDATE INSTANCES SET ACTIVE = 0 WHERE INSTANCE_CODE = ?", [req.params.code]);
-    res.json({ status: "deactivated", deactivatedInstances: result.changes || 0 });
-  } catch (err) {
-    errorResponse(req, res, err);
-  } finally {
-    db.close();
-  }
+  res.status(403).json({ error: "Instances cannot be deactivated or deleted" });
 }
 
 app.post("/instance/:code/deactivate", deactivateInstance);

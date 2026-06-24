@@ -40,6 +40,8 @@ Edit `config.yaml` and create a local `.env` before running or deploying.
 - `auth_failure_window_minutes`: minutes in the auth-failure counting window.
 - `auth_ban_days`: days to temporarily ban an IP after too many failures.
 - `admin_password`: shared admin password, normally loaded from `.env` or the environment.
+- `default_teacher_key`: first global teacher key seeded into the SQLite
+  `TEACHER_KEYS` table, normally loaded from `.env` or the environment.
 - `download_token`: bearer/query token for `/download`, loaded from `.env`, the environment, or `config.yaml`.
 - `legacy_routes_enabled`: keeps old `/insert` and `/retrieve` routes available.
 - `cloudflare`: deployment names and D1 database id.
@@ -55,6 +57,7 @@ The `.env` format is simple `KEY=value` lines:
 
 ```bash
 ADMIN_PASSWORD=admin
+DEFAULT_TEACHER_KEY=teacher
 DOWNLOAD_TOKEN=change-me-before-deploying
 AUTH_FAILURE_LIMIT=5
 AUTH_FAILURE_WINDOW_MINUTES=10
@@ -66,13 +69,16 @@ The committed `.env.example` values are intentionally simple local defaults.
 Change both production secret values before public deployment:
 
 - `ADMIN_PASSWORD`: the shared password required by teacher/admin APIs.
+- `DEFAULT_TEACHER_KEY`: the default global teacher key seeded into the
+  database on every server startup. Local default: `teacher`.
 - `DOWNLOAD_TOKEN`: the bearer/query token required by `/download`.
 - `AUTH_FAILURE_LIMIT`: failed key/password attempts before a temporary IP ban.
 - `AUTH_FAILURE_WINDOW_MINUTES`: minutes in the auth-failure counting window.
 - `AUTH_BAN_DAYS`: days to ban an IP after too many failures.
 
-Environment variables override `config.yaml`; for example, set `ADMIN_PASSWORD`
-or `PIXEL_PANDEMONIUM_ADMIN_PASSWORD` in production. For Cloudflare Workers,
+Environment variables override `config.yaml`; for example, set `ADMIN_PASSWORD`,
+`PIXEL_PANDEMONIUM_ADMIN_PASSWORD`, `DEFAULT_TEACHER_KEY`, or
+`PIXEL_PANDEMONIUM_DEFAULT_TEACHER_KEY` in production. For Cloudflare Workers,
 also replace the placeholder values in `wrangler.jsonc` or configure secrets in
 the deployed environment.
 
@@ -108,6 +114,14 @@ Admin APIs accept the shared password as `adminPassword` in the JSON body, as an
 `adminPassword` query parameter, or as the `X-Admin-Password` header. The browser
 admin page prompts for it when it is not already in the URL/session.
 
+Teacher portal APIs accept a global teacher key as `teacherAccessKey` in the
+JSON body, as a `teacherAccessKey` query parameter, or as the
+`X-Teacher-Access-Key` header. A global teacher key is required to create
+instances from the teacher-facing create page or to list/administer existing
+non-demo instances from the teacher dashboard. The server seeds
+`DEFAULT_TEACHER_KEY=teacher` locally unless changed, and re-adds that key on
+startup if it is missing from the database.
+
 Student/status/replay APIs require the per-instance class key as `key=...`,
 `accessKey` in the JSON body, or the `X-Instance-Key` header. Teacher/admin
 actions require `teacherKey=...`, `teacherKey` in the JSON body, or the
@@ -117,7 +131,7 @@ The built-in public Tetris demo is the exception. The server always seeds
 `instanceCode=tetris` and `instanceName=tetris` for the bundled Tetris picture.
 Anyone can open `instructions.html?instance=tetris`, submit pixels, or retrieve
 replay rows without a class key. Teachers can reset it without a teacher key or
-admin password. The public demo cannot be deactivated or deleted, and teachers
+admin password. The public demo cannot be deleted or deactivated, and teachers
 cannot create another instance named `tetris`.
 
 The Express server enables CORS for configured `allowed_origins` and accepts the
@@ -164,6 +178,7 @@ Required local `.env` values:
 
 ```bash
 ADMIN_PASSWORD=admin
+DEFAULT_TEACHER_KEY=teacher
 DOWNLOAD_TOKEN=change-me-before-deploying
 AUTH_FAILURE_LIMIT=5
 AUTH_FAILURE_WINDOW_MINUTES=10
@@ -171,6 +186,8 @@ AUTH_BAN_DAYS=1
 ```
 
 - `ADMIN_PASSWORD` is the shared login required by teacher/admin APIs.
+- `DEFAULT_TEACHER_KEY` is the first global teacher key, seeded into the
+  database on every startup. The local default is `teacher`.
 - `DOWNLOAD_TOKEN` protects the full replay-data export at `/download`.
 - `AUTH_FAILURE_LIMIT`, `AUTH_FAILURE_WINDOW_MINUTES`, and `AUTH_BAN_DAYS`
   control temporary IP bans after repeated bad keys/passwords.
@@ -226,7 +243,7 @@ curl -X POST http://localhost:8000/pictures/custom \
   -H 'Content-Type: application/json' \
   -d '{
     "title": "Class Logo",
-    "adminPassword": "admin",
+    "teacherAccessKey": "teacher",
     "spec": {
       "palette": [[255,255,255],[0,0,0]],
       "numRows": 1,
@@ -263,7 +280,8 @@ curl -X POST http://localhost:8000/instance/create \
   -d '{
     "pictureId": "tetris",
     "teacherName": "Ada Lovelace",
-    "dateTime": "2026-06-23T10:30:00"
+    "dateTime": "2026-06-23T10:30:00",
+    "teacherAccessKey": "teacher"
   }'
 ```
 
@@ -282,6 +300,8 @@ separate teacher key.
 
 Omit `expirationHours` to use the configured 12-month default, or provide a
 positive hour count to override it for that one instance.
+
+Admin-created instances may send `adminPassword` instead of `teacherAccessKey`.
 
 ### Validate an instance
 
@@ -324,6 +344,48 @@ curl "http://localhost:8000/instance/INSTANCE-CODE/admin?admin=ADMIN-CODE&teache
 
 Returns instance metadata plus replay rows. This is used by `admin.html`.
 
+### List active instances
+
+```bash
+curl "http://localhost:8000/instances?adminPassword=admin" \
+  -H 'Origin: http://localhost:4000'
+```
+
+Returns active instances, picture metadata, keys, admin codes, and generated
+student/replay/teacher/admin URLs. This powers the admin page landing view when
+`admin.html` is opened without a specific instance code.
+
+### Validate a global teacher key
+
+```bash
+curl "http://localhost:8000/teacher/validate?teacherAccessKey=teacher" \
+  -H 'Origin: http://localhost:4000'
+```
+
+### List instances as a teacher
+
+```bash
+curl "http://localhost:8000/teacher/instances?teacherAccessKey=teacher" \
+  -H 'Origin: http://localhost:4000'
+```
+
+This powers the teacher dashboard after a global teacher key is accepted.
+
+### Manage global teacher keys
+
+```bash
+curl "http://localhost:8000/teacher-keys?adminPassword=admin" \
+  -H 'Origin: http://localhost:4000'
+
+curl -X POST http://localhost:8000/teacher-keys \
+  -H 'Origin: http://localhost:4000' \
+  -H 'Content-Type: application/json' \
+  -d '{"teacherKey":"section-a","label":"Section A","adminPassword":"admin"}'
+```
+
+Only admin access can list or create global teacher keys. Duplicate teacher
+keys, including the configured default teacher key, are rejected with `409`.
+
 ### Rotate class or teacher keys
 
 ```bash
@@ -355,7 +417,7 @@ curl -X POST http://localhost:8000/instance/INSTANCE-CODE/event/ROW-ID/delete \
   -d '{"adminCode":"ADMIN-CODE","teacherKey":"TEACHER-KEY","adminPassword":"admin"}'
 ```
 
-### Deactivate an instance
+### Delete or deactivate an instance
 
 ```bash
 curl -X POST http://localhost:8000/instance/INSTANCE-CODE/deactivate \
@@ -364,7 +426,9 @@ curl -X POST http://localhost:8000/instance/INSTANCE-CODE/deactivate \
   -d '{"adminCode":"ADMIN-CODE","teacherKey":"TEACHER-KEY","adminPassword":"admin"}'
 ```
 
-Deactivate is a soft delete. It sets `ACTIVE = 0`, preserves the instance row and replay data, and makes the instance behave as not found for student/status/replay access. The legacy `/instance/:code/delete` route is retained as an alias for deactivation.
+Instances cannot be deleted or deactivated. The legacy
+`/instance/:code/deactivate` and `/instance/:code/delete` routes are retained
+only to return `403` with `Instances cannot be deactivated or deleted`.
 
 ## Instance Codes
 
@@ -390,11 +454,13 @@ The browser catches most typos locally, and the server still validates code form
   guessed instance code.
 - Teacher/admin URLs include a separate teacher key and cannot be used with only
   the guessed instance/admin code.
+- A global teacher key is required to create instances or use the teacher
+  dashboard for non-demo instances.
 - Students submit tile pixels into that instance only.
 - The teacher opens the replay URL and watches live updates.
 - A teacher resets an instance for practice or reuse.
 - A teacher/admin edits or deletes individual replay rows from the admin page.
-- A teacher/admin deactivates an instance without deleting stored replay data.
+- Instances cannot be deleted or deactivated.
 - A teacher/admin rotates the class key or teacher key from the admin page when
   a link needs to be invalidated.
 - A teacher/admin generates time-lapse animations from actual instance data or from the finished product, including unfinished activities.

@@ -14,6 +14,7 @@ SERVER_PID=""
 ensure_test_env() {
   touch .env
   grep -q '^ADMIN_PASSWORD=' .env || printf 'ADMIN_PASSWORD=%s\n' "$ADMIN_PASSWORD" >>.env
+  grep -q '^DEFAULT_TEACHER_KEY=' .env || printf 'DEFAULT_TEACHER_KEY=teacher\n' >>.env
   grep -q '^DOWNLOAD_TOKEN=' .env || printf 'DOWNLOAD_TOKEN=change-me-before-deploying\n' >>.env
   grep -q '^AUTH_FAILURE_LIMIT=' .env || printf 'AUTH_FAILURE_LIMIT=5\n' >>.env
   grep -q '^AUTH_FAILURE_WINDOW_MINUTES=' .env || printf 'AUTH_FAILURE_WINDOW_MINUTES=10\n' >>.env
@@ -55,6 +56,14 @@ fi
 clear_test_auth_failures
 
 curl -fsS "$BASE_URL/health" >/dev/null
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/teacher/validate?teacherAccessKey=teacher" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!d.valid) process.exit(1)"
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/teacher-keys?adminPassword=$ADMIN_PASSWORD" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!Array.isArray(d.teacherKeys) || !d.teacherKeys.some(k => k.teacherKey === 'teacher')) process.exit(1)"
+DUP_TEACHER_KEY_STATUS="$(curl -s -o /tmp/pixel-duplicate-teacher-key.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d "{\"teacherKey\":\"teacher\",\"adminPassword\":\"$ADMIN_PASSWORD\"}" \
+  "$BASE_URL/teacher-keys")"
+test "$DUP_TEACHER_KEY_STATUS" = "409"
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/pictures" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length < 16 || !d.some(p => p.id === 'tetris')) process.exit(1)"
 
@@ -69,13 +78,13 @@ ZIP_STATUS="$(curl -s -o /tmp/pixel-custom-spec.zip -w "%{http_code}" -H "Origin
 test "$ZIP_STATUS" = "200"
 
 CREATE_A="$(curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
-  -d '{"pictureId":"tetris","teacherName":"Ada Lovelace","dateTime":"2026-06-23T10:30:00","expirationHours":2}' \
+  -d '{"pictureId":"tetris","teacherName":"Ada Lovelace","dateTime":"2026-06-23T10:30:00","expirationHours":2,"teacherAccessKey":"teacher"}' \
   "$BASE_URL/instance/create")"
 CREATE_B="$(curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
-  -d '{"pictureId":"eagles","teacherName":"Grace Hopper","dateTime":"2026-06-23T11:30:00","expirationHours":2}' \
+  -d '{"pictureId":"eagles","teacherName":"Grace Hopper","dateTime":"2026-06-23T11:30:00","expirationHours":2,"teacherAccessKey":"teacher"}' \
   "$BASE_URL/instance/create")"
 CREATE_CUSTOM="$(curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
-  -d "{\"pictureId\":\"$CUSTOM_ID\",\"teacherName\":\"Custom Teacher\",\"dateTime\":\"2026-06-23T12:30:00\",\"expirationHours\":2}" \
+  -d "{\"pictureId\":\"$CUSTOM_ID\",\"teacherName\":\"Custom Teacher\",\"dateTime\":\"2026-06-23T12:30:00\",\"expirationHours\":2,\"teacherAccessKey\":\"teacher\"}" \
   "$BASE_URL/instance/create")"
 
 CODE_A="$(node -e "const data=JSON.parse(process.argv[1]); console.log(data.instanceCode)" "$CREATE_A")"
@@ -109,7 +118,7 @@ TETRIS_DELETE_STATUS="$(curl -s -o /tmp/pixel-tetris-delete.json -w "%{http_code
 test "$TETRIS_DELETE_STATUS" = "403"
 
 RESERVED_NAME_STATUS="$(curl -s -o /tmp/pixel-reserved-name.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
-  -d '{"pictureId":"tetris","instanceName":"tetris","teacherName":"Reserved","dateTime":"2026-06-23T13:30:00","expirationHours":2}' \
+  -d '{"pictureId":"tetris","instanceName":"tetris","teacherName":"Reserved","dateTime":"2026-06-23T13:30:00","expirationHours":2,"teacherAccessKey":"teacher"}' \
   "$BASE_URL/instance/create")"
 test "$RESERVED_NAME_STATUS" = "409"
 
@@ -187,11 +196,12 @@ curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/retrieve?key=$KEY_A" 
 curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d "{\"accessKey\":\"$KEY_A\",\"data\":\"0,0,10,10,#123456,0,0\"}" \
   "$BASE_URL/instance/$CODE_A/insert" >/dev/null
-curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+DEACTIVATE_STATUS="$(curl -s -o /tmp/pixel-deactivate.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d "{\"adminCode\":\"$ADMIN_A\",\"teacherKey\":\"$TEACHER_KEY_A\",\"adminPassword\":\"$ADMIN_PASSWORD\"}" \
-  "$BASE_URL/instance/$CODE_A/deactivate" >/dev/null
-DELETE_STATUS="$(curl -s -o /tmp/pixel-deleted.json -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/status?key=$KEY_A")"
-test "$DELETE_STATUS" = "404"
+  "$BASE_URL/instance/$CODE_A/deactivate")"
+test "$DEACTIVATE_STATUS" = "403"
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/status?key=$KEY_A" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!d.valid) process.exit(1)"
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/retrieve?name=$CODE_A" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length!==1 || !d[0].DATA.includes('#123456')) process.exit(1)"
 
