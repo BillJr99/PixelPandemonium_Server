@@ -8,6 +8,9 @@ const {
   requireActiveInstance,
   resetInstance,
   listPictures,
+  createCustomPicture,
+  customPictureSpecJs,
+  customPictureArtifacts,
   validateCheckDigit,
   generateInstanceCode,
   run,
@@ -20,6 +23,19 @@ function memoryDb() {
 
 const config = {
   default_expiration_hours: 72
+};
+
+const tinySpec = {
+  palette: [[255, 255, 255], [0, 0, 0]],
+  numRows: 1,
+  numCols: 1,
+  pages: [
+    {
+      col: "A",
+      row: "1",
+      uncompressed: [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0]
+    }
+  ]
 };
 
 test("migrate seeds original CS173 picture inventory", async () => {
@@ -66,6 +82,65 @@ test("createInstance stores active instance metadata", async () => {
   assert.equal(row.PICTURE_ID, "tetris");
   assert.equal(row.TEACHER_NAME, "Ada Lovelace");
   assert.deepEqual(await requireActiveInstance(db, created.instanceCode), row);
+  db.close();
+});
+
+test("createCustomPicture stores normalized specs and generated artifacts", async () => {
+  const db = memoryDb();
+  await migrate(db);
+  const picture = await createCustomPicture(db, {
+    title: "Tiny Custom",
+    spec: tinySpec
+  });
+
+  assert.match(picture.id, /^custom-tiny-custom-/);
+  const pictures = await listPictures(db);
+  assert.ok(pictures.some((item) => item.id === picture.id && item.custom === 1));
+
+  const js = await customPictureSpecJs(db, picture.id);
+  assert.match(js, /var palette =/);
+  assert.match(js, /var numRows = 1/);
+  assert.match(js, /var pages =/);
+
+  const { artifacts } = await customPictureArtifacts(db, picture.id);
+  assert.ok(artifacts["Post-It_tiny_custom_composite.js"]);
+  assert.ok(artifacts["Post-It_tiny_custom_composite.csv"]);
+  assert.ok(artifacts["Post-It_tiny_custom_uncompressed.txt"]);
+  assert.ok(artifacts["Post-It_tiny_custom_compressed.txt"]);
+  assert.ok(artifacts["ColorMap_tiny_custom.txt"]);
+  assert.ok(artifacts["ColorMap_tiny_custom.html"]);
+  db.close();
+});
+
+test("createInstance accepts stored custom picture ids", async () => {
+  const db = memoryDb();
+  await migrate(db);
+  const picture = await createCustomPicture(db, {
+    title: "Instance Custom",
+    spec: tinySpec
+  });
+  const created = await createInstance(db, {
+    pictureId: picture.id,
+    teacherName: "Ada Lovelace",
+    dateTime: "2026-06-23T10:30:00",
+    expirationHours: 1
+  }, config);
+
+  const row = await getInstance(db, created.instanceCode);
+  assert.equal(row.PICTURE_ID, picture.id);
+  db.close();
+});
+
+test("createCustomPicture rejects incomplete specs", async () => {
+  const db = memoryDb();
+  await migrate(db);
+  await assert.rejects(
+    createCustomPicture(db, {
+      title: "Broken Custom",
+      spec: { palette: [[0, 0, 0]], numRows: 1, numCols: 1, pages: [] }
+    }),
+    /pages must match/
+  );
   db.close();
 });
 

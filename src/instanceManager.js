@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const { PICTURES } = require("./pictures");
+const { customPictureId, validateSpec, specToJs, generateArtifacts } = require("./customPictures");
 
 const CREATE_INSTANCES_TABLE = `
 CREATE TABLE IF NOT EXISTS INSTANCES (
@@ -30,7 +31,11 @@ CREATE TABLE IF NOT EXISTS PICTURES (
   ID TEXT PRIMARY KEY NOT NULL,
   TITLE TEXT NOT NULL,
   SCRIPT TEXT NOT NULL,
-  ENABLED INTEGER DEFAULT 1 NOT NULL
+  ENABLED INTEGER DEFAULT 1 NOT NULL,
+  CUSTOM INTEGER DEFAULT 0 NOT NULL,
+  SPEC_JSON TEXT,
+  ARTIFACTS_JSON TEXT,
+  CREATED_AT TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 `;
 
@@ -138,6 +143,16 @@ async function migrate(db) {
   await run(db, "ALTER TABLE INSTANCES ADD COLUMN ACTIVE INTEGER DEFAULT 1 NOT NULL").catch((err) => {
     if (!/duplicate column/i.test(err.message)) throw err;
   });
+  for (const sql of [
+    "ALTER TABLE PICTURES ADD COLUMN CUSTOM INTEGER DEFAULT 0 NOT NULL",
+    "ALTER TABLE PICTURES ADD COLUMN SPEC_JSON TEXT",
+    "ALTER TABLE PICTURES ADD COLUMN ARTIFACTS_JSON TEXT",
+    "ALTER TABLE PICTURES ADD COLUMN CREATED_AT TEXT"
+  ]) {
+    await run(db, sql).catch((err) => {
+      if (!/duplicate column/i.test(err.message)) throw err;
+    });
+  }
   for (const sql of CREATE_INDEXES) await run(db, sql);
   await seedPictures(db);
 }
@@ -151,14 +166,66 @@ async function seedPictures(db) {
        ON CONFLICT(ID) DO UPDATE SET
          TITLE = excluded.TITLE,
          SCRIPT = excluded.SCRIPT,
-         ENABLED = 1`,
+         ENABLED = 1,
+         CUSTOM = 0`,
       [picture.id, picture.title, picture.script]
     );
   }
 }
 
 async function listPictures(db) {
-  return all(db, "SELECT ID as id, TITLE as title, SCRIPT as script FROM PICTURES WHERE ENABLED = 1 ORDER BY TITLE ASC");
+  return all(db, "SELECT ID as id, TITLE as title, SCRIPT as script, CUSTOM as custom FROM PICTURES WHERE ENABLED = 1 ORDER BY TITLE ASC");
+}
+
+async function getPicture(db, pictureId) {
+  return get(db, "SELECT ID as id, TITLE as title, SCRIPT as script, CUSTOM as custom, SPEC_JSON as specJson, ARTIFACTS_JSON as artifactsJson FROM PICTURES WHERE ID = ? AND ENABLED = 1", [pictureId]);
+}
+
+async function createCustomPicture(db, input) {
+  const title = String(input.title || "Custom Picture").trim().slice(0, 120) || "Custom Picture";
+  const spec = validateSpec(input.spec);
+  const id = input.id ? String(input.id).trim() : customPictureId(title);
+  if (!/^custom-[a-z0-9-]+$/i.test(id)) {
+    const err = new Error("Custom picture id must start with custom- and contain only letters, numbers, and hyphens");
+    err.status = 400;
+    throw err;
+  }
+  const script = `/pictures/${encodeURIComponent(id)}/spec.js`;
+  const artifacts = input.artifacts && typeof input.artifacts === "object" ? input.artifacts : generateArtifacts(title, spec);
+  await run(
+    db,
+    `INSERT INTO PICTURES (ID, TITLE, SCRIPT, ENABLED, CUSTOM, SPEC_JSON, ARTIFACTS_JSON)
+     VALUES (?, ?, ?, 1, 1, ?, ?)
+     ON CONFLICT(ID) DO UPDATE SET
+       TITLE = excluded.TITLE,
+       SCRIPT = excluded.SCRIPT,
+       ENABLED = 1,
+       CUSTOM = 1,
+       SPEC_JSON = excluded.SPEC_JSON,
+       ARTIFACTS_JSON = excluded.ARTIFACTS_JSON`,
+    [id, title, script, JSON.stringify(spec), JSON.stringify(artifacts)]
+  );
+  return { id, title, script, custom: 1, spec, artifacts };
+}
+
+async function customPictureSpecJs(db, pictureId) {
+  const picture = await getPicture(db, pictureId);
+  if (!picture || !picture.custom || !picture.specJson) {
+    const err = new Error("Custom picture not found");
+    err.status = 404;
+    throw err;
+  }
+  return specToJs(JSON.parse(picture.specJson));
+}
+
+async function customPictureArtifacts(db, pictureId) {
+  const picture = await getPicture(db, pictureId);
+  if (!picture || !picture.custom || !picture.artifactsJson) {
+    const err = new Error("Custom picture not found");
+    err.status = 404;
+    throw err;
+  }
+  return { title: picture.title, artifacts: JSON.parse(picture.artifactsJson) };
 }
 
 async function createInstance(db, input, config) {
@@ -260,6 +327,10 @@ module.exports = {
   migrate,
   seedPictures,
   listPictures,
+  getPicture,
+  createCustomPicture,
+  customPictureSpecJs,
+  customPictureArtifacts,
   createInstance,
   getInstance,
   requireActiveInstance,

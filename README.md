@@ -122,6 +122,29 @@ Terminal 2 can run the test harness:
 ./test.sh
 ```
 
+## Server `.env` Startup Setup
+
+The `.env` file exists only on the server. The static client never stores,
+creates, reads, or modifies a client-side `.env`.
+
+Required local `.env` values:
+
+```bash
+ADMIN_PASSWORD=admin
+DOWNLOAD_TOKEN=change-me-before-deploying
+```
+
+- `ADMIN_PASSWORD` is the shared login required by teacher/admin APIs.
+- `DOWNLOAD_TOKEN` protects the full replay-data export at `/download`.
+
+When the server starts, it checks for `.env` and for required keys. If the file
+or a required key is missing and the server is running in an interactive
+terminal, startup prompts for values with defaults prepopulated for revision and
+writes the server-side `.env`. If startup is non-interactive, the server exits
+with an error explaining which keys are missing. Until the server has a valid
+`.env`, client logins and teacher/admin operations are unavailable because the
+server does not finish startup.
+
 ## API
 
 ### List pictures
@@ -133,7 +156,65 @@ curl http://localhost:8000/pictures \
   -H 'Origin: http://localhost:4000'
 ```
 
-`POST /instance/create` validates `pictureId` against this table.
+`POST /instance/create` validates `pictureId` against this table. The table also
+stores teacher-created custom pictures.
+
+### Create a custom picture
+
+Custom pictures are normalized to the same runtime data shape as the original
+posterizer composite JavaScript files:
+
+```json
+{
+  "palette": [[255, 255, 255], [0, 0, 0]],
+  "numRows": 1,
+  "numCols": 1,
+  "pages": [
+    {
+      "col": "A",
+      "row": "1",
+      "uncompressed": [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+      "compressed": [1, 0, 1, 1]
+    }
+  ]
+}
+```
+
+`compressed` is optional. The server regenerates it when missing.
+
+```bash
+curl -X POST http://localhost:8000/pictures/custom \
+  -H 'Origin: http://localhost:4000' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Class Logo",
+    "adminPassword": "admin",
+    "spec": {
+      "palette": [[255,255,255],[0,0,0]],
+      "numRows": 1,
+      "numCols": 1,
+      "pages": [
+        {"col":"A","row":"1","uncompressed":[0,1,0,1,0,1,0,1,0,1,0,1,0,1,0]}
+      ]
+    }
+  }'
+```
+
+The response includes `id`, `script`, `specUrl`, and `zipUrl`. Use the returned
+`id` as `pictureId` when creating an instance.
+
+### Download custom spec files
+
+```bash
+curl http://localhost:8000/pictures/CUSTOM-PICTURE-ID/spec.js \
+  -H 'Origin: http://localhost:4000'
+
+curl -o specs.zip http://localhost:8000/pictures/CUSTOM-PICTURE-ID/spec-files.zip \
+  -H 'Origin: http://localhost:4000'
+```
+
+The zip contains generated posterizer-style files: composite JS, composite CSV,
+uncompressed TXT, compressed TXT, color map TXT, and color map HTML.
 
 ### Create an instance
 
@@ -150,6 +231,9 @@ curl -X POST http://localhost:8000/instance/create \
 ```
 
 The response includes `instanceCode`, `adminCode`, `studentUrl`, `replayUrl`, `adminUrl`, and `expiresAt`.
+Status/admin responses also include `pictureTitle`; custom pictures include
+`pictureCustom`, `pictureSpecUrl`, and `pictureZipUrl` so the static client can
+load the server-served spec.
 
 ### Validate an instance
 
@@ -237,6 +321,9 @@ The browser catches most typos locally, and the server still validates code form
 
 - A teacher creates an instance for a picture and class time.
 - The server validates the selected picture against the prepopulated original CS173 image inventory.
+- A teacher can upload outside posterizer specs or a browser-generated image spec,
+  store it as a custom picture, download generated spec files, and create an
+  instance from that custom picture.
 - The teacher shares the student QR code or URL.
 - Students submit tile pixels into that instance only.
 - The teacher opens the replay URL and watches live updates.
@@ -256,7 +343,10 @@ npm install
 ./test.sh
 ```
 
-The harness runs unit tests first, then reads `config.yaml`, starts the server if it is not already running, creates two instances, verifies seeded pictures, isolation, reset, invalid-code handling, and legacy routes.
+The harness runs unit tests first, then reads `config.yaml`, starts the server if
+it is not already running, creates static and custom instances, verifies seeded
+pictures, custom spec JS, custom spec zip downloads, isolation, reset,
+invalid-code handling, and legacy routes.
 
 Unit tests only:
 
@@ -271,6 +361,16 @@ npm run test:integration
 ```
 
 If `node_modules` is missing, run `npm install` first.
+
+Some Node/npm tooling may print:
+
+```text
+The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+```
+
+This is only terminal color configuration. `FORCE_COLOR` takes precedence over
+`NO_COLOR`; unset `FORCE_COLOR` if you want `NO_COLOR` to suppress colored test
+output.
 
 ## Cloudflare Deployment
 

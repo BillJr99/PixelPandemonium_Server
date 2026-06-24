@@ -42,20 +42,36 @@ curl -fsS "$BASE_URL/health" >/dev/null
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/pictures" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length < 16 || !d.some(p => p.id === 'tetris')) process.exit(1)"
 
+CUSTOM_PAYLOAD="{\"title\":\"Smoke Custom\",\"adminPassword\":\"$ADMIN_PASSWORD\",\"spec\":{\"palette\":[[255,255,255],[0,0,0]],\"numRows\":1,\"numCols\":1,\"pages\":[{\"col\":\"A\",\"row\":\"1\",\"uncompressed\":[0,1,0,1,0,1,0,1,0,1,0,1,0,1,0]}]}}"
+CUSTOM_PICTURE="$(curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d "$CUSTOM_PAYLOAD" \
+  "$BASE_URL/pictures/custom")"
+CUSTOM_ID="$(node -e "const data=JSON.parse(process.argv[1]); if(!data.id || !data.zipUrl) process.exit(1); console.log(data.id)" "$CUSTOM_PICTURE")"
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/pictures/$CUSTOM_ID/spec.js" \
+  | node -e "const fs=require('fs'); const text=fs.readFileSync(0,'utf8'); if(!/var palette =/.test(text) || !/var pages =/.test(text)) process.exit(1)"
+ZIP_STATUS="$(curl -s -o /tmp/pixel-custom-spec.zip -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/pictures/$CUSTOM_ID/spec-files.zip")"
+test "$ZIP_STATUS" = "200"
+
 CREATE_A="$(curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d '{"pictureId":"tetris","teacherName":"Ada Lovelace","dateTime":"2026-06-23T10:30:00","expirationHours":2}' \
   "$BASE_URL/instance/create")"
 CREATE_B="$(curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d '{"pictureId":"tetris","teacherName":"Grace Hopper","dateTime":"2026-06-23T11:30:00","expirationHours":2}' \
   "$BASE_URL/instance/create")"
+CREATE_CUSTOM="$(curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d "{\"pictureId\":\"$CUSTOM_ID\",\"teacherName\":\"Custom Teacher\",\"dateTime\":\"2026-06-23T12:30:00\",\"expirationHours\":2}" \
+  "$BASE_URL/instance/create")"
 
 CODE_A="$(node -e "const data=JSON.parse(process.argv[1]); console.log(data.instanceCode)" "$CREATE_A")"
 ADMIN_A="$(node -e "const data=JSON.parse(process.argv[1]); console.log(data.adminCode)" "$CREATE_A")"
 CODE_B="$(node -e "const data=JSON.parse(process.argv[1]); console.log(data.instanceCode)" "$CREATE_B")"
+CODE_CUSTOM="$(node -e "const data=JSON.parse(process.argv[1]); console.log(data.instanceCode)" "$CREATE_CUSTOM")"
 
 node -e "const data=JSON.parse(process.argv[1]); if(!/admin\\.html\\?instance=/.test(data.adminUrl)) process.exit(1)" "$CREATE_A"
 
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/status" | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!d.valid) process.exit(1)"
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_CUSTOM/status" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!d.valid || !d.pictureCustom || !d.pictureSpecUrl) process.exit(1)"
 
 INVALID_STATUS="$(curl -s -o /tmp/pixel-invalid.json -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/instance/BAD-CODE/status")"
 test "$INVALID_STATUS" = "400"

@@ -1,4 +1,6 @@
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 const express = require("express");
 const rateLimit = require("express-rate-limit");
 const cors = require("cors");
@@ -14,9 +16,14 @@ const {
   cleanupExpired,
   validateCheckDigit,
   listPictures,
+  getPicture,
+  createCustomPicture,
+  customPictureSpecJs,
+  customPictureArtifacts,
   run,
   all
 } = require("./instanceManager");
+const { zipFiles } = require("./customPictures");
 
 const config = loadConfig();
 const app = express();
@@ -29,6 +36,79 @@ function openDb() {
   const db = new sqlite3.Database(config.database_path);
   db.configure("busyTimeout", Number(config.sqlite_busy_timeout_ms || 5000));
   return db;
+}
+
+function envPath() {
+  return path.join(process.cwd(), ".env");
+}
+
+function defaultEnvText() {
+  return [
+    `ADMIN_PASSWORD=${String(config.admin_password || "admin")}`,
+    `DOWNLOAD_TOKEN=${String(config.download_token || "change-me-before-deploying")}`,
+    ""
+  ].join("\n");
+}
+
+function parseEnvText(text) {
+  const parsed = {};
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const index = trimmed.indexOf("=");
+    if (index < 0) continue;
+    parsed[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim().replace(/^["']|["']$/g, "");
+  }
+  return parsed;
+}
+
+async function ensureServerEnv() {
+  const required = ["ADMIN_PASSWORD", "DOWNLOAD_TOKEN"];
+  const file = envPath();
+  const existingText = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  const parsed = parseEnvText(existingText);
+  const missing = required.filter((key) => !parsed[key]);
+  if (!missing.length) return;
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(`Server .env is missing required key(s): ${missing.join(", ")}. Create ${file} before starting the server.`);
+  }
+
+  const readline = require("readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (question, fallback) => new Promise((resolve) => {
+    rl.question(`${question} [${fallback}]: `, (answer) => resolve(answer.trim() || fallback));
+  });
+
+  const next = { ...parsed };
+  for (const key of missing) {
+    const fallback = key === "ADMIN_PASSWORD"
+      ? String(config.admin_password || "admin")
+      : String(config.download_token || "change-me-before-deploying");
+    next[key] = await ask(key, fallback);
+  }
+  rl.close();
+
+  const preserved = existingText.split(/\r?\n/).filter((line) => {
+    const key = line.split("=")[0].trim();
+    return key && !required.includes(key);
+  });
+  const content = preserved.concat(required.map((key) => `${key}=${next[key]}`), "").join("\n");
+  fs.writeFileSync(file, content, { mode: 0o600 });
+  applyEnvText(content);
+}
+
+function applyEnvText(text) {
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const index = trimmed.indexOf("=");
+    if (index < 0) continue;
+    const key = trimmed.slice(0, index).trim();
+    const value = trimmed.slice(index + 1).trim().replace(/^["']|["']$/g, "");
+    if (key === "ADMIN_PASSWORD") config.admin_password = value;
+    if (key === "DOWNLOAD_TOKEN") config.download_token = value;
+  }
 }
 
 function log(level, message, details = {}) {
@@ -81,6 +161,21 @@ function publicInstance(row) {
     createdAt: row.CREATED_AT,
     expiresAt: row.EXPIRES_AT
   };
+}
+
+async function publicInstanceWithPicture(db, row) {
+  const data = publicInstance(row);
+  const picture = await getPicture(db, row.PICTURE_ID);
+  if (picture) {
+    data.pictureTitle = picture.title;
+    data.pictureScript = picture.script;
+    data.pictureCustom = !!picture.custom;
+    if (picture.custom) {
+      data.pictureSpecUrl = `/pictures/${encodeURIComponent(picture.id)}/spec.js`;
+      data.pictureZipUrl = `/pictures/${encodeURIComponent(picture.id)}/spec-files.zip`;
+    }
+  }
+  return data;
 }
 
 function adminPasswordFromRequest(req) {
@@ -170,7 +265,7 @@ app.use((req, res, next) => {
   next();
 });
 app.use(cors(corsOptions));
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(rateLimit({
   windowMs: 60 * 1000,
@@ -205,6 +300,55 @@ app.get("/pictures", async (req, res) => {
   }
 });
 
+app.post("/pictures/custom", async (req, res) => {
+  const db = openDb();
+  try {
+    await ensureMigrated(db);
+    requireAdminPassword(req);
+    const result = await createCustomPicture(db, req.body || {});
+    res.status(201).json({
+      id: result.id,
+      title: result.title,
+      script: result.script,
+      custom: true,
+      specUrl: `/pictures/${encodeURIComponent(result.id)}/spec.js`,
+      zipUrl: `/pictures/${encodeURIComponent(result.id)}/spec-files.zip`
+    });
+  } catch (err) {
+    errorResponse(req, res, err);
+  } finally {
+    db.close();
+  }
+});
+
+app.get("/pictures/:id/spec.js", async (req, res) => {
+  const db = openDb();
+  try {
+    await ensureMigrated(db);
+    res.type("application/javascript; charset=utf-8").send(await customPictureSpecJs(db, req.params.id));
+  } catch (err) {
+    errorResponse(req, res, err);
+  } finally {
+    db.close();
+  }
+});
+
+app.get("/pictures/:id/spec-files.zip", async (req, res) => {
+  const db = openDb();
+  try {
+    await ensureMigrated(db);
+    const { title, artifacts } = await customPictureArtifacts(db, req.params.id);
+    const filename = `${String(title).replace(/[^a-z0-9_-]+/gi, "_") || "custom"}_spec_files.zip`;
+    res.setHeader("content-type", "application/zip");
+    res.setHeader("content-disposition", `attachment; filename="${filename}"`);
+    res.send(zipFiles(artifacts));
+  } catch (err) {
+    errorResponse(req, res, err);
+  } finally {
+    db.close();
+  }
+});
+
 app.post("/instance/create", async (req, res) => {
   const db = openDb();
   try {
@@ -229,8 +373,8 @@ app.get("/instance/:code/status", async (req, res) => {
     if (!row) return res.status(404).json({ valid: false, error: "Instance not found" });
     if (!row.ACTIVE) return res.status(404).json({ valid: false, error: "Instance not found" });
     const expired = new Date(row.EXPIRES_AT).getTime() <= Date.now();
-    if (expired) return res.status(410).json({ valid: false, error: "Instance expired", ...publicInstance(row) });
-    res.json({ valid: true, ...publicInstance(row), ...buildUrls(row.INSTANCE_CODE, row.ADMIN_CODE) });
+    if (expired) return res.status(410).json({ valid: false, error: "Instance expired", ...(await publicInstanceWithPicture(db, row)) });
+    res.json({ valid: true, ...(await publicInstanceWithPicture(db, row)), ...buildUrls(row.INSTANCE_CODE, row.ADMIN_CODE) });
   } catch (err) {
     errorResponse(req, res, err);
   } finally {
@@ -293,7 +437,7 @@ app.get("/instance/:code/admin", async (req, res) => {
     requireAdminPassword(req);
     const row = await requireAdminInstance(db, req.params.code, req.query.admin);
     const rows = await all(db, "SELECT * FROM DATA WHERE INSTANCE_CODE = ? ORDER BY TIMESTAMP ASC, ID ASC", [req.params.code]);
-    res.json({ ...publicInstance(row), rows });
+    res.json({ ...(await publicInstanceWithPicture(db, row)), rows });
   } catch (err) {
     errorResponse(req, res, err);
   } finally {
@@ -428,6 +572,7 @@ bayeux.addExtension({
 bayeux.attach(server);
 
 async function start() {
+  await ensureServerEnv();
   const db = openDb();
   await ensureMigrated(db);
   db.close();
