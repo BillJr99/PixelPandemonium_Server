@@ -126,6 +126,12 @@ function accessKey(): string {
 
 function studentUrls(env: Env, instanceCode: string, key: string) {
   const base = (env.CLIENT_BASE_URL || "").replace(/\/$/, "");
+  if (String(instanceCode || "").toLowerCase() === "tetris") {
+    return {
+      studentUrl: `${base}/instructions.html?instance=tetris`,
+      replayUrl: `${base}/replay.html?instance=tetris`
+    };
+  }
   const encodedKey = encodeURIComponent(key || "");
   return {
     studentUrl: `${base}/instructions.html?instance=${encodeURIComponent(instanceCode)}&key=${encodedKey}`,
@@ -135,6 +141,13 @@ function studentUrls(env: Env, instanceCode: string, key: string) {
 
 function urls(env: Env, instanceCode: string, admin: string, key: string, teacherKey: string) {
   const base = (env.CLIENT_BASE_URL || "").replace(/\/$/, "");
+  if (String(instanceCode || "").toLowerCase() === "tetris") {
+    return {
+      ...studentUrls(env, instanceCode, key),
+      teacherUrl: `${base}/teacher-dashboard.html?instance=tetris`,
+      adminUrl: `${base}/admin.html?instance=tetris`
+    };
+  }
   const encodedTeacherKey = encodeURIComponent(teacherKey || "");
   return {
     ...studentUrls(env, instanceCode, key),
@@ -248,6 +261,36 @@ export default {
       return json(request, env, result.results);
     }
 
+    if (url.pathname === "/instances" && request.method === "GET") {
+      await ensurePictures(env);
+      const passwordError = adminPasswordError(request, env, url);
+      if (passwordError) return passwordError;
+      const result = await env.DB.prepare(
+        `SELECT i.*, p.TITLE as PICTURE_TITLE, p.SCRIPT as PICTURE_SCRIPT, p.CUSTOM as PICTURE_CUSTOM
+         FROM INSTANCES i
+         LEFT JOIN PICTURES p ON p.ID = i.PICTURE_ID
+         WHERE i.ACTIVE = 1
+         ORDER BY i.CREATED_AT DESC, i.ID DESC`
+      ).all<any>();
+      const instances = (result.results || []).map((row: any) => ({
+        instanceCode: row.INSTANCE_CODE,
+        instanceName: row.INSTANCE_NAME || row.INSTANCE_CODE,
+        pictureId: row.PICTURE_ID,
+        teacherName: row.TEACHER_NAME,
+        requestedDateTime: row.REQUESTED_DATETIME,
+        createdAt: row.CREATED_AT,
+        expiresAt: row.EXPIRES_AT,
+        pictureTitle: row.PICTURE_TITLE,
+        pictureScript: row.PICTURE_SCRIPT,
+        pictureCustom: !!row.PICTURE_CUSTOM,
+        adminCode: row.ADMIN_CODE,
+        accessKey: row.ACCESS_KEY,
+        teacherKey: row.TEACHER_KEY,
+        ...urls(env, row.INSTANCE_CODE, row.ADMIN_CODE, row.ACCESS_KEY, row.TEACHER_KEY)
+      }));
+      return json(request, env, { instances });
+    }
+
     if (url.pathname === "/instance/create" && request.method === "POST") {
       await ensurePictures(env);
       const body = await readRequestBody(request);
@@ -264,7 +307,7 @@ export default {
       const admin = adminCode();
       const key = accessKey();
       const teacherKey = accessKey();
-      const hours = Number(body.expirationHours || env.DEFAULT_EXPIRATION_HOURS || 72);
+      const hours = Number(body.expirationHours || env.DEFAULT_EXPIRATION_HOURS || 8760);
       const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
       await env.DB.prepare(
         "INSERT INTO INSTANCES (INSTANCE_CODE, ADMIN_CODE, INSTANCE_NAME, ACCESS_KEY, TEACHER_KEY, PICTURE_ID, TEACHER_NAME, REQUESTED_DATETIME, EXPIRES_AT) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"

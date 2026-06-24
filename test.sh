@@ -91,6 +91,9 @@ KEY_CUSTOM="$(node -e "const data=JSON.parse(process.argv[1]); console.log(data.
 
 node -e "const data=JSON.parse(process.argv[1]); if(!/instructions\\.html\\?instance=.*&key=/.test(data.studentUrl) || !/teacher-dashboard\\.html\\?instance=.*&teacherKey=.*&admin=/.test(data.teacherUrl) || !/admin\\.html\\?instance=.*&teacherKey=.*&admin=/.test(data.adminUrl)) process.exit(1)" "$CREATE_A"
 
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instances?adminPassword=$ADMIN_PASSWORD" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!Array.isArray(d.instances) || !d.instances.some(i => i.instanceCode === 'tetris' && !/[?&]key=/.test(i.studentUrl)) || !d.instances.some(i => i.instanceCode === process.argv[1] && i.accessKey && i.teacherKey && /[?&]key=/.test(i.studentUrl))) process.exit(1)" "$CODE_A"
+
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/tetris/status" | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!d.valid || d.instanceCode!=='tetris' || d.pictureId!=='tetris') process.exit(1)"
 curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d '{"data":"0,0,10,10,#abcdef,0,0"}' \

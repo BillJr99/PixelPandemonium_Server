@@ -6,7 +6,7 @@ const DEFAULTS = {
   database_path: "./main.db",
   allowed_origins: ["http://localhost:4000", "http://127.0.0.1:4000"],
   client_base_url: "http://localhost:4000",
-  default_expiration_hours: 72,
+  default_expiration_hours: 8760,
   cleanup_interval_minutes: 60,
   sqlite_busy_timeout_ms: 5000,
   rate_limit_max_per_minute: 180,

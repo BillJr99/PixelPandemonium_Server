@@ -159,6 +159,14 @@ function originAllowed(origin) {
 
 function buildUrls(instanceCode, adminCode, accessKey, teacherKey) {
   const base = String(config.client_base_url).replace(/\/$/, "");
+  if (isTetrisDemoCode(instanceCode)) {
+    return {
+      studentUrl: `${base}/instructions.html?instance=tetris`,
+      replayUrl: `${base}/replay.html?instance=tetris`,
+      teacherUrl: `${base}/teacher-dashboard.html?instance=tetris`,
+      adminUrl: `${base}/admin.html?instance=tetris`
+    };
+  }
   const key = encodeURIComponent(accessKey || "");
   const teacher = encodeURIComponent(teacherKey || "");
   return {
@@ -171,6 +179,12 @@ function buildUrls(instanceCode, adminCode, accessKey, teacherKey) {
 
 function buildStudentUrls(instanceCode, accessKey) {
   const base = String(config.client_base_url).replace(/\/$/, "");
+  if (isTetrisDemoCode(instanceCode)) {
+    return {
+      studentUrl: `${base}/instructions.html?instance=tetris`,
+      replayUrl: `${base}/replay.html?instance=tetris`
+    };
+  }
   const key = encodeURIComponent(accessKey || "");
   return {
     studentUrl: `${base}/instructions.html?instance=${encodeURIComponent(instanceCode)}&key=${key}`,
@@ -485,6 +499,31 @@ app.post("/instance/create", async (req, res) => {
     await ensureMigrated(db);
     const result = await createInstance(db, req.body, config);
     res.status(201).json({ ...result, ...buildUrls(result.instanceCode, result.adminCode, result.accessKey, result.teacherKey) });
+  } catch (err) {
+    errorResponse(req, res, err);
+  } finally {
+    db.close();
+  }
+});
+
+app.get("/instances", async (req, res) => {
+  const db = openDb();
+  try {
+    await ensureMigrated(db);
+    await requireAdminPassword(db, req);
+    const rows = await all(db, "SELECT * FROM INSTANCES WHERE ACTIVE = 1 ORDER BY CREATED_AT DESC, ID DESC");
+    const instances = [];
+    for (const row of rows) {
+      instances.push({
+        ...(await publicInstanceWithPicture(db, row)),
+        adminCode: row.ADMIN_CODE,
+        accessKey: row.ACCESS_KEY,
+        teacherKey: row.TEACHER_KEY,
+        ...buildUrls(row.INSTANCE_CODE, row.ADMIN_CODE, row.ACCESS_KEY, row.TEACHER_KEY)
+      });
+    }
+    await clearAuthFailures(db, req);
+    res.json({ instances });
   } catch (err) {
     errorResponse(req, res, err);
   } finally {

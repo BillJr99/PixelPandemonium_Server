@@ -30,7 +30,9 @@ Edit `config.yaml` and create a local `.env` before running or deploying.
 - `database_path`: SQLite database path for local/Node hosting.
 - `allowed_origins`: browser origins allowed to call the API.
 - `client_base_url`: public base URL of the static client. Returned URLs are built from this.
-- `default_expiration_hours`: default lifetime for a class instance.
+- `default_expiration_hours`: default lifetime for a class instance. The default
+  is `8760`, roughly 12 months. The public Tetris demo is seeded separately and
+  lasts indefinitely.
 - `cleanup_interval_minutes`: interval for removing expired replay data.
 - `sqlite_busy_timeout_ms`: how long SQLite waits for a locked database before failing a write/read.
 - `rate_limit_max_per_minute`: maximum API requests per client IP per minute.
@@ -261,8 +263,7 @@ curl -X POST http://localhost:8000/instance/create \
   -d '{
     "pictureId": "tetris",
     "teacherName": "Ada Lovelace",
-    "dateTime": "2026-06-23T10:30:00",
-    "expirationHours": 72
+    "dateTime": "2026-06-23T10:30:00"
   }'
 ```
 
@@ -278,6 +279,9 @@ instance name. The name `tetris` is reserved for the built-in public demo. The
 `studentUrl` is the teacher-shareable URL for that specific
 instance and includes the class key. The `teacherUrl` and `adminUrl` include the
 separate teacher key.
+
+Omit `expirationHours` to use the configured 12-month default, or provide a
+positive hour count to override it for that one instance.
 
 ### Validate an instance
 

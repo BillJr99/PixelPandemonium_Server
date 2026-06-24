@@ -289,7 +289,7 @@ async function createInstance(db, input, config) {
   const pictureId = String(input.pictureId || "").trim();
   const teacherName = String(input.teacherName || "").trim();
   const dateTime = String(input.dateTime || "").trim();
-  const expirationHours = Number(input.expirationHours || config.default_expiration_hours || 72);
+  const expirationHours = Number(input.expirationHours || config.default_expiration_hours || 8760);
   const requestedInstanceName = String(input.instanceName || "").trim();
 
   if (!pictureId || !teacherName || !dateTime) {

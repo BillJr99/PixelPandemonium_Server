@@ -27,7 +27,7 @@
   "vars": {
     "ALLOWED_ORIGINS": "http://localhost:4000,https://billmongan.com,https://billjr99.github.io,https://jaheimoates-him.github.io",
     "CLIENT_BASE_URL": "http://localhost:4000",
-    "DEFAULT_EXPIRATION_HOURS": "72",
+    "DEFAULT_EXPIRATION_HOURS": "8760",
     "ADMIN_PASSWORD": "admin",
     "DOWNLOAD_TOKEN": "change-me-before-deploying",
     "LEGACY_ROUTES_ENABLED": "true"

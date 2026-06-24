@@ -22,7 +22,7 @@ function memoryDb() {
 }
 
 const config = {
-  default_expiration_hours: 72
+  default_expiration_hours: 8760
 };
 
 const tinySpec = {
