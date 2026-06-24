@@ -15,6 +15,13 @@ Install dependencies:
 npm install
 ```
 
+Restore Node dependencies after cloning or after removing `node_modules` with
+the same command:
+
+```bash
+npm install
+```
+
 ## Configuration
 
 Edit `config.yaml` and create a local `.env` before running or deploying.
@@ -307,7 +314,7 @@ After Cloudflare deploys, update the client `config.yaml`:
 ```yaml
 server_url: https://your-worker.your-subdomain.workers.dev
 realtime_url: https://your-worker.your-subdomain.workers.dev
-base_url: https://your-github-user.github.io/PixelPandemonium_client
+base_url: https://your-github-user.github.io/PixelPandemonium_Client
 ```
 
 Then deploy the client to GitHub Pages from its `gh-pages` branch.
@@ -329,7 +336,7 @@ npm install
 ```yaml
 allowed_origins:
   - https://your-github-user.github.io
-client_base_url: https://your-github-user.github.io/PixelPandemonium_client
+client_base_url: https://your-github-user.github.io/PixelPandemonium_Client
 database_path: ./main.db
 ```
 
@@ -346,5 +353,5 @@ After Replit starts, update the client `config.yaml`:
 ```yaml
 server_url: https://your-repl-url.replit.app
 realtime_url: https://your-repl-url.replit.app
-base_url: https://your-github-user.github.io/PixelPandemonium_client
+base_url: https://your-github-user.github.io/PixelPandemonium_Client
 ```
