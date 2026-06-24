@@ -22,6 +22,23 @@ the same command:
 npm install
 ```
 
+## Quick Start: Cloudflare Server + Hosted Client
+
+When deploying the server to Cloudflare and hosting the static client on GitHub
+Pages, make sure the server allows the browser origin of the client. In
+`config.yaml`, include the client origin in `allowed_origins` and set
+`client_base_url` to the full public client URL:
+
+```yaml
+allowed_origins:
+  - https://YOUR-GITHUB-USER.github.io
+client_base_url: https://YOUR-GITHUB-USER.github.io/PixelPandemonium_Client
+```
+
+If the client is hosted on a custom domain, use that origin instead. The client
+repository must point `server_url` and `realtime_url` at the Cloudflare Worker
+URL or custom Worker domain.
+
 ## Configuration
 
 Edit `config.yaml` and create a local `.env` before running or deploying.
