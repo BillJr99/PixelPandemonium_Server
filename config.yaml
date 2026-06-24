@@ -15,7 +15,9 @@ rate_limit_max_per_minute: 20
 rate_limit_max_per_day: 10000
 auth_failure_limit: 5
 auth_failure_window_minutes: 10
-auth_ban_days: 1
+auth_admin_ban_days: 1
+auth_teacher_ban_minutes: 10
+auth_student_ban_minutes: 10
 download_token: change-me-before-deploying
 legacy_routes_enabled: true
 cloudflare:

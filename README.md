@@ -91,7 +91,9 @@ Edit `config.yaml` and create a local `.env` before running or deploying.
 - `rate_limit_max_per_day`: maximum API requests per client IP per day.
 - `auth_failure_limit`: failed key/password attempts allowed in the auth-failure window.
 - `auth_failure_window_minutes`: minutes in the auth-failure counting window.
-- `auth_ban_days`: days to temporarily ban an IP after too many failures.
+- `auth_admin_ban_days`: days to temporarily ban an IP after too many admin password/code failures.
+- `auth_teacher_ban_minutes`: minutes to temporarily ban an IP after too many teacher key failures.
+- `auth_student_ban_minutes`: minutes to temporarily ban an IP after too many student class-key failures.
 - `admin_password`: shared admin password, normally loaded from `.env` or the environment.
 - `default_teacher_key`: first global teacher key seeded into the SQLite
   `TEACHER_KEYS` table, normally loaded from `.env` or the environment.
@@ -114,7 +116,9 @@ DEFAULT_TEACHER_KEY=teacher
 DOWNLOAD_TOKEN=change-me-before-deploying
 AUTH_FAILURE_LIMIT=5
 AUTH_FAILURE_WINDOW_MINUTES=10
-AUTH_BAN_DAYS=1
+AUTH_ADMIN_BAN_DAYS=1
+AUTH_TEACHER_BAN_MINUTES=10
+AUTH_STUDENT_BAN_MINUTES=10
 RATE_LIMIT_MAX_PER_SECOND=3
 RATE_LIMIT_MAX_PER_MINUTE=20
 RATE_LIMIT_MAX_PER_DAY=10000
@@ -131,7 +135,9 @@ Change production secret values before public deployment:
 - `DOWNLOAD_TOKEN`: the bearer/query token required by `/download`.
 - `AUTH_FAILURE_LIMIT`: failed key/password attempts before a temporary IP ban.
 - `AUTH_FAILURE_WINDOW_MINUTES`: minutes in the auth-failure counting window.
-- `AUTH_BAN_DAYS`: days to ban an IP after too many failures.
+- `AUTH_ADMIN_BAN_DAYS`: days to ban an IP after too many admin password/code failures. Default: `1`.
+- `AUTH_TEACHER_BAN_MINUTES`: minutes to ban an IP after too many teacher key failures. Default: `10`.
+- `AUTH_STUDENT_BAN_MINUTES`: minutes to ban an IP after too many student class-key failures. Default: `10`.
 - `RATE_LIMIT_MAX_PER_SECOND`: short request burst allowed from one IP. Default:
   `3`, enough for fast clicking but low enough to stop simple automation.
 - `RATE_LIMIT_MAX_PER_MINUTE`: sustained requests allowed from one IP.
@@ -215,8 +221,9 @@ custom key/password headers used by the client. It stores normal application
 data in SQLite: instances, replay rows, custom picture specs/artifacts, and
 auth-failure throttling. Repeated bad class keys, teacher keys, admin codes, or
 admin passwords from the same IP are temporarily blocked. Defaults are
-`AUTH_FAILURE_LIMIT=5`, `AUTH_FAILURE_WINDOW_MINUTES=10`, and
-`AUTH_BAN_DAYS=1`.
+`AUTH_FAILURE_LIMIT=5`, `AUTH_FAILURE_WINDOW_MINUTES=10`,
+`AUTH_ADMIN_BAN_DAYS=1`, `AUTH_TEACHER_BAN_MINUTES=10`, and
+`AUTH_STUDENT_BAN_MINUTES=10`.
 
 ### Diagnostics
 
@@ -258,7 +265,9 @@ DEFAULT_TEACHER_KEY=teacher
 DOWNLOAD_TOKEN=change-me-before-deploying
 AUTH_FAILURE_LIMIT=5
 AUTH_FAILURE_WINDOW_MINUTES=10
-AUTH_BAN_DAYS=1
+AUTH_ADMIN_BAN_DAYS=1
+AUTH_TEACHER_BAN_MINUTES=10
+AUTH_STUDENT_BAN_MINUTES=10
 RATE_LIMIT_MAX_PER_SECOND=3
 RATE_LIMIT_MAX_PER_MINUTE=20
 RATE_LIMIT_MAX_PER_DAY=10000
@@ -269,8 +278,11 @@ LEGACY_ROUTES_ENABLED=false
 - `DEFAULT_TEACHER_KEY` is the first global teacher key, seeded into the
   database on every startup. The local default is `teacher`.
 - `DOWNLOAD_TOKEN` protects the full replay-data export at `/download`.
-- `AUTH_FAILURE_LIMIT`, `AUTH_FAILURE_WINDOW_MINUTES`, and `AUTH_BAN_DAYS`
-  control temporary IP bans after repeated bad keys/passwords.
+- `AUTH_FAILURE_LIMIT` and `AUTH_FAILURE_WINDOW_MINUTES` control how many
+  failed auth attempts are allowed within the counting window.
+- `AUTH_ADMIN_BAN_DAYS`, `AUTH_TEACHER_BAN_MINUTES`, and
+  `AUTH_STUDENT_BAN_MINUTES` control how long an IP is banned after too many
+  admin, teacher, or student-key failures.
 - `RATE_LIMIT_MAX_PER_SECOND`, `RATE_LIMIT_MAX_PER_MINUTE`, and
   `RATE_LIMIT_MAX_PER_DAY` control stacked IP-based throttling. The defaults
   allow fast human clicking and a full classroom behind one shared school IP.

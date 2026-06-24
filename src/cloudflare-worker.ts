@@ -13,7 +13,9 @@ export interface Env {
   LEGACY_ROUTES_ENABLED: string;
   AUTH_FAILURE_LIMIT: string;
   AUTH_FAILURE_WINDOW_MINUTES: string;
-  AUTH_BAN_DAYS: string;
+  AUTH_ADMIN_BAN_DAYS: string;
+  AUTH_TEACHER_BAN_MINUTES: string;
+  AUTH_STUDENT_BAN_MINUTES: string;
 }
 
 interface ClientAttachment {
@@ -213,10 +215,76 @@ function adminPasswordFromRequest(request: Request, url: URL, body?: Record<stri
   return request.headers.get("x-admin-password") || body?.adminPassword || url.searchParams.get("adminPassword") || "";
 }
 
-function adminPasswordError(request: Request, env: Env, url: URL, body?: Record<string, any>) {
+function authFailureKey(request: Request, category: string): string {
+  return `${category}:${clientIp(request)}`;
+}
+
+function authFailureLimit(env: Env): number {
+  return positiveInt(env.AUTH_FAILURE_LIMIT, 5);
+}
+
+function authFailureWindowMs(env: Env): number {
+  return positiveInt(env.AUTH_FAILURE_WINDOW_MINUTES, 10) * 60 * 1000;
+}
+
+function authBanMs(env: Env, category: string): number {
+  if (category === "teacher") return positiveInt(env.AUTH_TEACHER_BAN_MINUTES, 10) * 60 * 1000;
+  if (category === "student") return positiveInt(env.AUTH_STUDENT_BAN_MINUTES, 10) * 60 * 1000;
+  return positiveInt(env.AUTH_ADMIN_BAN_DAYS, 1) * 24 * 60 * 60 * 1000;
+}
+
+async function requireNotAuthBanned(request: Request, env: Env, category: string): Promise<Response | null> {
+  const key = authFailureKey(request, category);
+  const row = await env.DB.prepare("SELECT * FROM AUTH_FAILURES WHERE IP = ?").bind(key).first<any>();
+  if (!row || !row.BANNED_UNTIL) return null;
+  if (new Date(row.BANNED_UNTIL).getTime() <= Date.now()) {
+    await env.DB.prepare("DELETE FROM AUTH_FAILURES WHERE IP = ?").bind(key).run();
+    return null;
+  }
+  return json(request, env, { error: `Too many failed ${category} authentication attempts. Try again later.` }, { status: 429 });
+}
+
+async function recordAuthFailure(request: Request, env: Env, category: string, reason: string): Promise<void> {
+  const key = authFailureKey(request, category);
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  const row = await env.DB.prepare("SELECT * FROM AUTH_FAILURES WHERE IP = ?").bind(key).first<any>();
+  let count = 1;
+  let firstAt = nowIso;
+  if (row && !row.BANNED_UNTIL && now - new Date(row.FIRST_FAILURE_AT).getTime() <= authFailureWindowMs(env)) {
+    count = Number(row.FAILURE_COUNT || 0) + 1;
+    firstAt = row.FIRST_FAILURE_AT;
+  }
+  const bannedUntil = count >= authFailureLimit(env) ? new Date(now + authBanMs(env, category)).toISOString() : null;
+  await env.DB.prepare(
+    `INSERT INTO AUTH_FAILURES (IP, FAILURE_COUNT, FIRST_FAILURE_AT, BANNED_UNTIL)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(IP) DO UPDATE SET
+       FAILURE_COUNT = excluded.FAILURE_COUNT,
+       FIRST_FAILURE_AT = excluded.FIRST_FAILURE_AT,
+       BANNED_UNTIL = excluded.BANNED_UNTIL`
+  ).bind(key, count, firstAt, bannedUntil).run();
+  console.warn(JSON.stringify({ level: "warn", message: "Authentication failure recorded", ip: clientIp(request), category, reason, count, bannedUntil }));
+}
+
+async function clearAuthFailures(request: Request, env: Env, category: string): Promise<void> {
+  await env.DB.prepare("DELETE FROM AUTH_FAILURES WHERE IP = ?").bind(authFailureKey(request, category)).run();
+}
+
+async function authError(request: Request, env: Env, category: string, reason: string, message: string): Promise<Response> {
+  await recordAuthFailure(request, env, category, reason);
+  return json(request, env, { error: message }, { status: 403 });
+}
+
+async function adminPasswordError(request: Request, env: Env, url: URL, body?: Record<string, any>): Promise<Response | null> {
+  const banned = await requireNotAuthBanned(request, env, "admin");
+  if (banned) return banned;
   const expected = env.ADMIN_PASSWORD || "admin";
-  if (!expected || adminPasswordFromRequest(request, url, body) === expected) return null;
-  return json(request, env, { error: "Invalid admin password" }, { status: 403 });
+  if (!expected || adminPasswordFromRequest(request, url, body) === expected) {
+    await clearAuthFailures(request, env, "admin");
+    return null;
+  }
+  return authError(request, env, "admin", "admin-password", "Invalid admin password");
 }
 
 function accessKeyFromRequest(request: Request, url: URL, body?: Record<string, any>): string {
@@ -227,16 +295,26 @@ function teacherKeyFromRequest(request: Request, url: URL, body?: Record<string,
   return request.headers.get("x-teacher-key") || body?.teacherKey || url.searchParams.get("teacherKey") || "";
 }
 
-function instanceAccessError(request: Request, env: Env, url: URL, row: any, body?: Record<string, any>) {
+async function instanceAccessError(request: Request, env: Env, url: URL, row: any, body?: Record<string, any>): Promise<Response | null> {
   if (row.INSTANCE_CODE === "tetris" && row.PICTURE_ID === "tetris") return null;
-  if (accessKeyFromRequest(request, url, body) === String(row.ACCESS_KEY || "")) return null;
-  return json(request, env, { error: "Invalid instance access key" }, { status: 403 });
+  const banned = await requireNotAuthBanned(request, env, "student");
+  if (banned) return banned;
+  if (accessKeyFromRequest(request, url, body) === String(row.ACCESS_KEY || "")) {
+    await clearAuthFailures(request, env, "student");
+    return null;
+  }
+  return authError(request, env, "student", "instance-access-key", "Invalid instance access key");
 }
 
-function teacherAccessError(request: Request, env: Env, url: URL, row: any, body?: Record<string, any>) {
+async function teacherAccessError(request: Request, env: Env, url: URL, row: any, body?: Record<string, any>): Promise<Response | null> {
   if (row.INSTANCE_CODE === "tetris" && row.PICTURE_ID === "tetris") return null;
-  if (teacherKeyFromRequest(request, url, body) === String(row.TEACHER_KEY || "")) return null;
-  return json(request, env, { error: "Invalid teacher key" }, { status: 403 });
+  const banned = await requireNotAuthBanned(request, env, "teacher");
+  if (banned) return banned;
+  if (teacherKeyFromRequest(request, url, body) === String(row.TEACHER_KEY || "")) {
+    await clearAuthFailures(request, env, "teacher");
+    return null;
+  }
+  return authError(request, env, "teacher", "teacher-key", "Invalid teacher key");
 }
 
 async function activeInstance(env: Env, code: string) {
@@ -248,12 +326,20 @@ async function activeInstance(env: Env, code: string) {
   return { row };
 }
 
-async function adminInstance(env: Env, code: string, admin: string | null) {
+async function adminInstance(env: Env, code: string, admin: string | null, request?: Request) {
   if (!validateCheckDigit(code)) return { error: "Invalid instance code", status: 400 };
   const row = await env.DB.prepare("SELECT * FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(code).first<any>();
   if (!row || row.ACTIVE === 0) return { error: "Instance not found", status: 404 };
   if (row.INSTANCE_CODE === "tetris" && row.PICTURE_ID === "tetris") return { row };
-  if (row.ADMIN_CODE !== admin) return { error: "Invalid admin code", status: 403 };
+  if (request) {
+    const banned = await requireNotAuthBanned(request, env, "admin");
+    if (banned) return { response: banned };
+  }
+  if (row.ADMIN_CODE !== admin) {
+    if (request) await recordAuthFailure(request, env, "admin", "admin-code");
+    return { error: "Invalid admin code", status: 403 };
+  }
+  if (request) await clearAuthFailures(request, env, "admin");
   return { row };
 }
 
@@ -307,7 +393,7 @@ export default {
 
     if (url.pathname === "/instances" && request.method === "GET") {
       await ensurePictures(env);
-      const passwordError = adminPasswordError(request, env, url);
+      const passwordError = await adminPasswordError(request, env, url);
       if (passwordError) return passwordError;
       const result = await env.DB.prepare(
         `SELECT i.*, p.TITLE as PICTURE_TITLE, p.SCRIPT as PICTURE_SCRIPT, p.CUSTOM as PICTURE_CUSTOM
@@ -364,12 +450,13 @@ export default {
       const code = decodeURIComponent(instanceMatch[1]);
       const action = instanceMatch[2];
       if (action === "admin" && request.method === "GET") {
-        const passwordError = code === "tetris" ? null : adminPasswordError(request, env, url);
+        const passwordError = code === "tetris" ? null : await adminPasswordError(request, env, url);
         if (passwordError) return passwordError;
-        const found = await adminInstance(env, code, url.searchParams.get("admin"));
+        const found = await adminInstance(env, code, url.searchParams.get("admin"), request);
+        if (found.response) return found.response;
         if (found.error) return json(request, env, { error: found.error }, { status: found.status });
         const row = found.row!;
-        const teacherError = teacherAccessError(request, env, url, row);
+        const teacherError = await teacherAccessError(request, env, url, row);
         if (teacherError) return teacherError;
         const result = await env.DB.prepare("SELECT * FROM DATA WHERE INSTANCE_CODE = ? ORDER BY TIMESTAMP ASC, ID ASC").bind(code).all();
         return json(request, env, {
@@ -393,11 +480,12 @@ export default {
       if (action === "rotate-key" && request.method === "POST") {
         if (code === "tetris") return json(request, env, { error: "The public Tetris demo does not use keys" }, { status: 403 });
         const body = await readRequestBody(request);
-        const passwordError = adminPasswordError(request, env, url, body);
+        const passwordError = await adminPasswordError(request, env, url, body);
         if (passwordError) return passwordError;
-        const found = await adminInstance(env, code, body.adminCode || url.searchParams.get("admin"));
+        const found = await adminInstance(env, code, body.adminCode || url.searchParams.get("admin"), request);
+        if (found.response) return found.response;
         if (found.error) return json(request, env, { error: found.error }, { status: found.status });
-        const teacherError = teacherAccessError(request, env, url, found.row, body);
+        const teacherError = await teacherAccessError(request, env, url, found.row, body);
         if (teacherError) return teacherError;
         const keyType = String(body.keyType || url.searchParams.get("keyType") || "");
         if (keyType !== "student" && keyType !== "teacher") return json(request, env, { error: "keyType must be student or teacher" }, { status: 400 });
@@ -419,7 +507,7 @@ export default {
       const row = found.row!;
 
       if (action === "status" && request.method === "GET") {
-        const accessError = instanceAccessError(request, env, url, row);
+        const accessError = await instanceAccessError(request, env, url, row);
         if (accessError) return accessError;
         return json(request, env, {
           valid: true,
@@ -436,14 +524,14 @@ export default {
 
       if (action === "insert" && request.method === "POST") {
         const body = await readRequestBody(request);
-        const accessError = instanceAccessError(request, env, url, row, body);
+        const accessError = await instanceAccessError(request, env, url, row, body);
         if (accessError) return accessError;
         await env.DB.prepare("INSERT INTO DATA (INSTANCE_CODE, NAME, DATA) VALUES (?, ?, ?)").bind(code, code, body.data ?? null).run();
         return json(request, env, { status: "created" }, { status: 201 });
       }
 
       if (action === "retrieve" && request.method === "GET") {
-        const accessError = instanceAccessError(request, env, url, row);
+        const accessError = await instanceAccessError(request, env, url, row);
         if (accessError) return accessError;
         const result = await env.DB.prepare("SELECT * FROM DATA WHERE INSTANCE_CODE = ? ORDER BY TIMESTAMP ASC, ID ASC").bind(code).all();
         return json(request, env, result.results);
@@ -451,11 +539,17 @@ export default {
 
       if (action === "reset" && request.method === "POST") {
         const body = await readRequestBody(request);
-        const passwordError = code === "tetris" ? null : adminPasswordError(request, env, url, body);
+        const passwordError = code === "tetris" ? null : await adminPasswordError(request, env, url, body);
         if (passwordError) return passwordError;
         const supplied = body.adminCode || url.searchParams.get("admin");
-        if (code !== "tetris" && supplied !== row.ADMIN_CODE) return json(request, env, { error: "Invalid admin code" }, { status: 403 });
-        const teacherError = code === "tetris" ? null : teacherAccessError(request, env, url, row, body);
+        if (code !== "tetris" && supplied !== row.ADMIN_CODE) {
+          const banned = await requireNotAuthBanned(request, env, "admin");
+          if (banned) return banned;
+          await recordAuthFailure(request, env, "admin", "admin-code");
+          return json(request, env, { error: "Invalid admin code" }, { status: 403 });
+        }
+        if (code !== "tetris") await clearAuthFailures(request, env, "admin");
+        const teacherError = code === "tetris" ? null : await teacherAccessError(request, env, url, row, body);
         if (teacherError) return teacherError;
         const result = await env.DB.prepare("DELETE FROM DATA WHERE INSTANCE_CODE = ?").bind(code).run();
         return json(request, env, { status: "reset", deletedRows: result.meta.changes || 0 });
@@ -468,11 +562,12 @@ export default {
       const id = decodeURIComponent(eventMatch[2]);
       const action = eventMatch[3];
       const body = await readRequestBody(request);
-      const passwordError = adminPasswordError(request, env, url, body);
+      const passwordError = await adminPasswordError(request, env, url, body);
       if (passwordError) return passwordError;
-      const found = await adminInstance(env, code, body.adminCode || url.searchParams.get("admin"));
+      const found = await adminInstance(env, code, body.adminCode || url.searchParams.get("admin"), request);
+      if (found.response) return found.response;
       if (found.error) return json(request, env, { error: found.error }, { status: found.status });
-      const teacherError = teacherAccessError(request, env, url, found.row, body);
+      const teacherError = await teacherAccessError(request, env, url, found.row, body);
       if (teacherError) return teacherError;
       if (action === "update") {
         const result = await env.DB.prepare("UPDATE DATA SET DATA = ? WHERE ID = ? AND INSTANCE_CODE = ?").bind(body.data ?? "", id, code).run();

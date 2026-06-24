@@ -15,7 +15,9 @@ test("loadConfig reads auth throttling names from server .env", () => {
     "DOWNLOAD_TOKEN=test-token",
     "AUTH_FAILURE_LIMIT=7",
     "AUTH_FAILURE_WINDOW_MINUTES=12",
-    "AUTH_BAN_DAYS=3",
+    "AUTH_ADMIN_BAN_DAYS=3",
+    "AUTH_TEACHER_BAN_MINUTES=15",
+    "AUTH_STUDENT_BAN_MINUTES=20",
     ""
   ].join("\n"));
 
@@ -25,7 +27,9 @@ test("loadConfig reads auth throttling names from server .env", () => {
     DOWNLOAD_TOKEN: process.env.DOWNLOAD_TOKEN,
     AUTH_FAILURE_LIMIT: process.env.AUTH_FAILURE_LIMIT,
     AUTH_FAILURE_WINDOW_MINUTES: process.env.AUTH_FAILURE_WINDOW_MINUTES,
-    AUTH_BAN_DAYS: process.env.AUTH_BAN_DAYS
+    AUTH_ADMIN_BAN_DAYS: process.env.AUTH_ADMIN_BAN_DAYS,
+    AUTH_TEACHER_BAN_MINUTES: process.env.AUTH_TEACHER_BAN_MINUTES,
+    AUTH_STUDENT_BAN_MINUTES: process.env.AUTH_STUDENT_BAN_MINUTES
   };
   for (const key of Object.keys(previous)) delete process.env[key];
   try {
@@ -35,7 +39,9 @@ test("loadConfig reads auth throttling names from server .env", () => {
     assert.equal(config.download_token, "test-token");
     assert.equal(config.auth_failure_limit, 7);
     assert.equal(config.auth_failure_window_minutes, 12);
-    assert.equal(config.auth_ban_days, 3);
+    assert.equal(config.auth_admin_ban_days, 3);
+    assert.equal(config.auth_teacher_ban_minutes, 15);
+    assert.equal(config.auth_student_ban_minutes, 20);
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];

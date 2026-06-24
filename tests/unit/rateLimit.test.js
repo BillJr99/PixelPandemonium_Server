@@ -62,7 +62,9 @@ async function startServer(t, envLines) {
     "DOWNLOAD_TOKEN=change-me-before-deploying",
     "AUTH_FAILURE_LIMIT=5",
     "AUTH_FAILURE_WINDOW_MINUTES=10",
-    "AUTH_BAN_DAYS=1",
+    "AUTH_ADMIN_BAN_DAYS=1",
+    "AUTH_TEACHER_BAN_MINUTES=10",
+    "AUTH_STUDENT_BAN_MINUTES=10",
     ...envLines,
     ""
   ].join("\n"));

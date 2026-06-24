@@ -55,7 +55,9 @@ function defaultEnvText() {
     `DOWNLOAD_TOKEN=${String(config.download_token || "change-me-before-deploying")}`,
     `AUTH_FAILURE_LIMIT=${String(config.auth_failure_limit || 5)}`,
     `AUTH_FAILURE_WINDOW_MINUTES=${String(config.auth_failure_window_minutes || 10)}`,
-    `AUTH_BAN_DAYS=${String(config.auth_ban_days || 1)}`,
+    "AUTH_ADMIN_BAN_DAYS=1",
+    "AUTH_TEACHER_BAN_MINUTES=10",
+    "AUTH_STUDENT_BAN_MINUTES=10",
     "RATE_LIMIT_MAX_PER_SECOND=3",
     "RATE_LIMIT_MAX_PER_MINUTE=20",
     "RATE_LIMIT_MAX_PER_DAY=10000",
@@ -76,8 +78,11 @@ function parseEnvText(text) {
 }
 
 async function ensureServerEnv() {
-  const required = ["ADMIN_PASSWORD", "DEFAULT_TEACHER_KEY", "DOWNLOAD_TOKEN", "AUTH_FAILURE_LIMIT", "AUTH_FAILURE_WINDOW_MINUTES", "AUTH_BAN_DAYS"];
+  const required = ["ADMIN_PASSWORD", "DEFAULT_TEACHER_KEY", "DOWNLOAD_TOKEN", "AUTH_FAILURE_LIMIT", "AUTH_FAILURE_WINDOW_MINUTES"];
   const defaulted = {
+    AUTH_ADMIN_BAN_DAYS: "1",
+    AUTH_TEACHER_BAN_MINUTES: "10",
+    AUTH_STUDENT_BAN_MINUTES: "10",
     RATE_LIMIT_MAX_PER_SECOND: "3",
     RATE_LIMIT_MAX_PER_MINUTE: "20",
     RATE_LIMIT_MAX_PER_DAY: "10000"
@@ -109,9 +114,7 @@ async function ensureServerEnv() {
             ? String(config.download_token || "change-me-before-deploying")
             : key === "AUTH_FAILURE_LIMIT"
               ? String(config.auth_failure_limit || 5)
-              : key === "AUTH_FAILURE_WINDOW_MINUTES"
-                ? String(config.auth_failure_window_minutes || 10)
-                : String(config.auth_ban_days || 1);
+              : String(config.auth_failure_window_minutes || 10);
       next[key] = await ask(key, fallback);
     }
     rl.close();
@@ -146,7 +149,9 @@ function applyEnvText(text) {
     if (key === "DOWNLOAD_TOKEN") config.download_token = value;
     if (key === "AUTH_FAILURE_LIMIT") config.auth_failure_limit = Number(value);
     if (key === "AUTH_FAILURE_WINDOW_MINUTES") config.auth_failure_window_minutes = Number(value);
-    if (key === "AUTH_BAN_DAYS") config.auth_ban_days = Number(value);
+    if (key === "AUTH_ADMIN_BAN_DAYS") config.auth_admin_ban_days = Number(value);
+    if (key === "AUTH_TEACHER_BAN_MINUTES") config.auth_teacher_ban_minutes = Number(value);
+    if (key === "AUTH_STUDENT_BAN_MINUTES") config.auth_student_ban_minutes = Number(value);
     if (key === "RATE_LIMIT_MAX_PER_SECOND") config.rate_limit_max_per_second = Number(value);
     if (key === "RATE_LIMIT_MAX_PER_MINUTE") config.rate_limit_max_per_minute = Number(value);
     if (key === "RATE_LIMIT_MAX_PER_DAY") config.rate_limit_max_per_day = Number(value);
@@ -274,37 +279,56 @@ function clientIp(req) {
 function authConfig() {
   return {
     limit: Math.max(1, Number(config.auth_failure_limit || 5)),
-    windowMs: Math.max(1, Number(config.auth_failure_window_minutes || 10)) * 60 * 1000,
-    banMs: Math.max(1, Number(config.auth_ban_days || 1)) * 24 * 60 * 60 * 1000
+    windowMs: Math.max(1, Number(config.auth_failure_window_minutes || 10)) * 60 * 1000
   };
 }
 
-async function requireNotAuthBanned(db, req) {
+function authFailureCategory(reason) {
+  if (String(reason || "").startsWith("student") || reason === "instance-access-key") return "student";
+  if (String(reason || "").startsWith("teacher")) return "teacher";
+  if (String(reason || "").startsWith("admin")) return "admin";
+  return "admin";
+}
+
+function authBanMs(category) {
+  if (category === "teacher") return Math.max(1, Number(config.auth_teacher_ban_minutes || 10)) * 60 * 1000;
+  if (category === "student") return Math.max(1, Number(config.auth_student_ban_minutes || 10)) * 60 * 1000;
+  return Math.max(1, Number(config.auth_admin_ban_days || 1)) * 24 * 60 * 60 * 1000;
+}
+
+function authFailureKey(ip, category) {
+  return `${category}:${ip}`;
+}
+
+async function requireNotAuthBanned(db, req, category = "admin") {
   const ip = clientIp(req);
-  const row = await get(db, "SELECT * FROM AUTH_FAILURES WHERE IP = ?", [ip]);
+  const key = authFailureKey(ip, category);
+  const row = await get(db, "SELECT * FROM AUTH_FAILURES WHERE IP = ?", [key]);
   if (!row || !row.BANNED_UNTIL) return;
   if (new Date(row.BANNED_UNTIL).getTime() <= Date.now()) {
-    await run(db, "DELETE FROM AUTH_FAILURES WHERE IP = ?", [ip]);
+    await run(db, "DELETE FROM AUTH_FAILURES WHERE IP = ?", [key]);
     return;
   }
-  const err = new Error("Too many failed authentication attempts. Try again later.");
+  const err = new Error(`Too many failed ${category} authentication attempts. Try again later.`);
   err.status = 429;
   throw err;
 }
 
 async function recordAuthFailure(db, req, reason) {
   const ip = clientIp(req);
+  const category = authFailureCategory(reason);
+  const key = authFailureKey(ip, category);
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
-  const { limit, windowMs, banMs } = authConfig();
-  const row = await get(db, "SELECT * FROM AUTH_FAILURES WHERE IP = ?", [ip]);
+  const { limit, windowMs } = authConfig();
+  const row = await get(db, "SELECT * FROM AUTH_FAILURES WHERE IP = ?", [key]);
   let count = 1;
   let firstAt = nowIso;
   if (row && !row.BANNED_UNTIL && now - new Date(row.FIRST_FAILURE_AT).getTime() <= windowMs) {
     count = Number(row.FAILURE_COUNT || 0) + 1;
     firstAt = row.FIRST_FAILURE_AT;
   }
-  const bannedUntil = count >= limit ? new Date(now + banMs).toISOString() : null;
+  const bannedUntil = count >= limit ? new Date(now + authBanMs(category)).toISOString() : null;
   await run(
     db,
     `INSERT INTO AUTH_FAILURES (IP, FAILURE_COUNT, FIRST_FAILURE_AT, BANNED_UNTIL)
@@ -313,13 +337,23 @@ async function recordAuthFailure(db, req, reason) {
        FAILURE_COUNT = excluded.FAILURE_COUNT,
        FIRST_FAILURE_AT = excluded.FIRST_FAILURE_AT,
        BANNED_UNTIL = excluded.BANNED_UNTIL`,
-    [ip, count, firstAt, bannedUntil]
+    [key, count, firstAt, bannedUntil]
   );
-  log("warn", "Authentication failure recorded", { ip, reason, count, bannedUntil });
+  log("warn", "Authentication failure recorded", { ip, category, reason, count, bannedUntil });
 }
 
-async function clearAuthFailures(db, req) {
-  await run(db, "DELETE FROM AUTH_FAILURES WHERE IP = ?", [clientIp(req)]);
+async function clearAuthFailures(db, req, category) {
+  const ip = clientIp(req);
+  if (category) {
+    await run(db, "DELETE FROM AUTH_FAILURES WHERE IP = ?", [authFailureKey(ip, category)]);
+    return;
+  }
+  await run(db, "DELETE FROM AUTH_FAILURES WHERE IP IN (?, ?, ?, ?)", [
+    ip,
+    authFailureKey(ip, "admin"),
+    authFailureKey(ip, "teacher"),
+    authFailureKey(ip, "student")
+  ]);
 }
 
 async function authError(db, req, message, reason) {
@@ -331,10 +365,13 @@ async function authError(db, req, message, reason) {
 
 async function requireAdminPassword(db, req) {
   if (isTetrisDemoCode(req.params && req.params.code)) return;
-  await requireNotAuthBanned(db, req);
+  await requireNotAuthBanned(db, req, "admin");
   const expected = String(config.admin_password || "");
   if (!expected) return;
-  if (String(adminPasswordFromRequest(req)) === expected) return;
+  if (String(adminPasswordFromRequest(req)) === expected) {
+    await clearAuthFailures(db, req, "admin");
+    return;
+  }
   await authError(db, req, "Invalid admin password", "admin-password");
 }
 
@@ -372,6 +409,7 @@ async function requireAdminInstance(db, code, adminCode, req) {
     throw err;
   }
   if (isTetrisDemo(row)) return row;
+  if (req) await requireNotAuthBanned(db, req, "admin");
   if (row.ADMIN_CODE !== adminCode) {
     if (req) await authError(db, req, "Invalid admin code", "admin-code");
     else {
@@ -397,9 +435,9 @@ function teacherAccessKeyFromRequest(req) {
 
 async function requireInstanceAccess(db, req, row) {
   if (isTetrisDemo(row)) return;
-  await requireNotAuthBanned(db, req);
+  await requireNotAuthBanned(db, req, "student");
   if (String(accessKeyFromRequest(req)) === String(row.ACCESS_KEY || "")) {
-    await clearAuthFailures(db, req);
+    await clearAuthFailures(db, req, "student");
     return;
   }
   await authError(db, req, "Invalid instance access key", "instance-access-key");
@@ -407,16 +445,19 @@ async function requireInstanceAccess(db, req, row) {
 
 async function requireTeacherAccess(db, req, row) {
   if (isTetrisDemo(row)) return;
-  await requireNotAuthBanned(db, req);
-  if (String(teacherKeyFromRequest(req)) === String(row.TEACHER_KEY || "")) return;
+  await requireNotAuthBanned(db, req, "teacher");
+  if (String(teacherKeyFromRequest(req)) === String(row.TEACHER_KEY || "")) {
+    await clearAuthFailures(db, req, "teacher");
+    return;
+  }
   await authError(db, req, "Invalid teacher key", "teacher-key");
 }
 
 async function requireTeacherPortalAccess(db, req) {
-  await requireNotAuthBanned(db, req);
+  await requireNotAuthBanned(db, req, "teacher");
   const teacherAccessKey = teacherAccessKeyFromRequest(req);
   if (await teacherKeyExists(db, teacherAccessKey)) {
-    await clearAuthFailures(db, req);
+    await clearAuthFailures(db, req, "teacher");
     return teacherAccessKey;
   }
   await authError(db, req, "Invalid teacher access key", "teacher-access-key");
@@ -424,6 +465,7 @@ async function requireTeacherPortalAccess(db, req) {
 
 async function requireTeacherOwnsInstance(db, req, row) {
   if (isTetrisDemo(row) || adminPasswordFromRequest(req)) return;
+  await requireNotAuthBanned(db, req, "teacher");
   const teacherAccessKey = teacherAccessKeyFromRequest(req);
   if (teacherAccessKey && String(row.TEACHER_ACCESS_KEY || "") === String(teacherAccessKey)) return;
   await authError(db, req, "Teacher key does not own this instance", "teacher-instance-owner");

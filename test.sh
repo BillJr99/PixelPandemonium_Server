@@ -18,7 +18,12 @@ ensure_test_env() {
   grep -q '^DOWNLOAD_TOKEN=' .env || printf 'DOWNLOAD_TOKEN=change-me-before-deploying\n' >>.env
   grep -q '^AUTH_FAILURE_LIMIT=' .env || printf 'AUTH_FAILURE_LIMIT=5\n' >>.env
   grep -q '^AUTH_FAILURE_WINDOW_MINUTES=' .env || printf 'AUTH_FAILURE_WINDOW_MINUTES=10\n' >>.env
-  grep -q '^AUTH_BAN_DAYS=' .env || printf 'AUTH_BAN_DAYS=1\n' >>.env
+  grep -q '^AUTH_ADMIN_BAN_DAYS=' .env || printf 'AUTH_ADMIN_BAN_DAYS=1\n' >>.env
+  grep -q '^AUTH_TEACHER_BAN_MINUTES=' .env || printf 'AUTH_TEACHER_BAN_MINUTES=10\n' >>.env
+  grep -q '^AUTH_STUDENT_BAN_MINUTES=' .env || printf 'AUTH_STUDENT_BAN_MINUTES=10\n' >>.env
+  grep -q '^RATE_LIMIT_MAX_PER_SECOND=' .env || printf 'RATE_LIMIT_MAX_PER_SECOND=100\n' >>.env
+  grep -q '^RATE_LIMIT_MAX_PER_MINUTE=' .env || printf 'RATE_LIMIT_MAX_PER_MINUTE=1000\n' >>.env
+  grep -q '^RATE_LIMIT_MAX_PER_DAY=' .env || printf 'RATE_LIMIT_MAX_PER_DAY=100000\n' >>.env
 }
 
 clear_test_auth_failures() {
@@ -230,5 +235,19 @@ for _ in $(seq 1 5); do
 done
 BANNED_STATUS="$(curl -s -o /tmp/pixel-auth-banned.json -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_B/status?key=$KEY_B")"
 test "$BANNED_STATUS" = "429"
+
+clear_test_auth_failures
+for _ in $(seq 1 5); do
+  curl -s -o /tmp/pixel-teacher-auth-failure.json -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/teacher/validate?teacherAccessKey=WRONG" >/dev/null
+done
+TEACHER_BANNED_STATUS="$(curl -s -o /tmp/pixel-teacher-auth-banned.json -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/teacher/validate?teacherAccessKey=teacher")"
+test "$TEACHER_BANNED_STATUS" = "429"
+
+clear_test_auth_failures
+for _ in $(seq 1 5); do
+  curl -s -o /tmp/pixel-admin-auth-failure.json -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/instances?adminPassword=WRONG" >/dev/null
+done
+ADMIN_BANNED_STATUS="$(curl -s -o /tmp/pixel-admin-auth-banned.json -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/instances?adminPassword=$ADMIN_PASSWORD")"
+test "$ADMIN_BANNED_STATUS" = "429"
 
 echo "Server tests passed."

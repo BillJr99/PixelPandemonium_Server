@@ -14,7 +14,9 @@ const DEFAULTS = {
   rate_limit_max_per_day: 10000,
   auth_failure_limit: 5,
   auth_failure_window_minutes: 10,
-  auth_ban_days: 1,
+  auth_admin_ban_days: 1,
+  auth_teacher_ban_minutes: 10,
+  auth_student_ban_minutes: 10,
   admin_password: "admin",
   default_teacher_key: "teacher",
   download_token: "change-me-before-deploying",
@@ -116,8 +118,14 @@ function loadConfig(configPath = path.join(process.cwd(), "config.yaml")) {
   if (process.env.PIXEL_PANDEMONIUM_AUTH_FAILURE_WINDOW_MINUTES) {
     config.auth_failure_window_minutes = Number(process.env.PIXEL_PANDEMONIUM_AUTH_FAILURE_WINDOW_MINUTES);
   }
-  if (process.env.PIXEL_PANDEMONIUM_AUTH_BAN_DAYS) {
-    config.auth_ban_days = Number(process.env.PIXEL_PANDEMONIUM_AUTH_BAN_DAYS);
+  if (process.env.PIXEL_PANDEMONIUM_AUTH_ADMIN_BAN_DAYS) {
+    config.auth_admin_ban_days = Number(process.env.PIXEL_PANDEMONIUM_AUTH_ADMIN_BAN_DAYS);
+  }
+  if (process.env.PIXEL_PANDEMONIUM_AUTH_TEACHER_BAN_MINUTES) {
+    config.auth_teacher_ban_minutes = Number(process.env.PIXEL_PANDEMONIUM_AUTH_TEACHER_BAN_MINUTES);
+  }
+  if (process.env.PIXEL_PANDEMONIUM_AUTH_STUDENT_BAN_MINUTES) {
+    config.auth_student_ban_minutes = Number(process.env.PIXEL_PANDEMONIUM_AUTH_STUDENT_BAN_MINUTES);
   }
   if (process.env.PIXEL_PANDEMONIUM_ADMIN_PASSWORD) {
     config.admin_password = process.env.PIXEL_PANDEMONIUM_ADMIN_PASSWORD;
@@ -158,8 +166,14 @@ function loadConfig(configPath = path.join(process.cwd(), "config.yaml")) {
   if (process.env.AUTH_FAILURE_WINDOW_MINUTES) {
     config.auth_failure_window_minutes = Number(process.env.AUTH_FAILURE_WINDOW_MINUTES);
   }
-  if (process.env.AUTH_BAN_DAYS) {
-    config.auth_ban_days = Number(process.env.AUTH_BAN_DAYS);
+  if (process.env.AUTH_ADMIN_BAN_DAYS) {
+    config.auth_admin_ban_days = Number(process.env.AUTH_ADMIN_BAN_DAYS);
+  }
+  if (process.env.AUTH_TEACHER_BAN_MINUTES) {
+    config.auth_teacher_ban_minutes = Number(process.env.AUTH_TEACHER_BAN_MINUTES);
+  }
+  if (process.env.AUTH_STUDENT_BAN_MINUTES) {
+    config.auth_student_ban_minutes = Number(process.env.AUTH_STUDENT_BAN_MINUTES);
   }
   return config;
 }
