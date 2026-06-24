@@ -21,9 +21,41 @@ const {
 const config = loadConfig();
 const app = express();
 app.set("trust proxy", 1);
+let requestCounter = 0;
+let migrationComplete = false;
+let migrationPromise = null;
 
 function openDb() {
-  return new sqlite3.Database(config.database_path);
+  const db = new sqlite3.Database(config.database_path);
+  db.configure("busyTimeout", Number(config.sqlite_busy_timeout_ms || 5000));
+  return db;
+}
+
+function log(level, message, details = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+    ...details
+  };
+  const line = JSON.stringify(entry);
+  if (level === "error") console.error(line);
+  else if (level === "warn") console.warn(line);
+  else console.log(line);
+}
+
+async function ensureMigrated(db) {
+  if (migrationComplete) return;
+  if (!migrationPromise) {
+    migrationPromise = (async () => {
+      await migrate(db);
+      await run(db, "PRAGMA journal_mode = WAL").catch((err) => {
+        log("warn", "Could not enable SQLite WAL mode", { error: err.message });
+      });
+      migrationComplete = true;
+    })();
+  }
+  await migrationPromise;
 }
 
 function originAllowed(origin) {
@@ -51,9 +83,20 @@ function publicInstance(row) {
   };
 }
 
-function errorResponse(res, err) {
+function errorResponse(req, res, err) {
   const status = err.status || 500;
-  res.status(status).json({ valid: false, error: err.message || "Server error" });
+  const requestId = req && req.requestId;
+  log(status >= 500 ? "error" : "warn", "Request failed", {
+    requestId,
+    method: req && req.method,
+    path: req && req.originalUrl,
+    status,
+    error: err.message || "Server error",
+    code: err.code,
+    errno: err.errno,
+    stack: status >= 500 ? err.stack : undefined
+  });
+  res.status(status).json({ valid: false, error: err.message || "Server error", requestId });
 }
 
 async function requireAdminInstance(db, code, adminCode) {
@@ -91,12 +134,34 @@ const corsOptions = {
   credentials: true
 };
 
+app.use((req, res, next) => {
+  req.requestId = `${Date.now().toString(36)}-${(++requestCounter).toString(36)}`;
+  const startedAt = process.hrtime.bigint();
+  log("info", "Request started", {
+    requestId: req.requestId,
+    method: req.method,
+    path: req.originalUrl,
+    origin: req.get("origin") || null,
+    ip: req.ip
+  });
+  res.on("finish", () => {
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    log(res.statusCode >= 500 ? "error" : res.statusCode >= 400 ? "warn" : "info", "Request finished", {
+      requestId: req.requestId,
+      method: req.method,
+      path: req.originalUrl,
+      status: res.statusCode,
+      durationMs: Number(durationMs.toFixed(1))
+    });
+  });
+  next();
+});
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(rateLimit({
   windowMs: 60 * 1000,
-  max: 180,
+  max: Number(config.rate_limit_max_per_minute || 180),
   message: "Too many requests from this IP in a short time window. Please try again later."
 }));
 
@@ -118,10 +183,10 @@ app.get("/health", (req, res) => {
 app.get("/pictures", async (req, res) => {
   const db = openDb();
   try {
-    await migrate(db);
+    await ensureMigrated(db);
     res.json(await listPictures(db));
   } catch (err) {
-    errorResponse(res, err);
+    errorResponse(req, res, err);
   } finally {
     db.close();
   }
@@ -130,11 +195,11 @@ app.get("/pictures", async (req, res) => {
 app.post("/instance/create", async (req, res) => {
   const db = openDb();
   try {
-    await migrate(db);
+    await ensureMigrated(db);
     const result = await createInstance(db, req.body, config);
     res.status(201).json({ ...result, ...buildUrls(result.instanceCode, result.adminCode) });
   } catch (err) {
-    errorResponse(res, err);
+    errorResponse(req, res, err);
   } finally {
     db.close();
   }
@@ -143,7 +208,7 @@ app.post("/instance/create", async (req, res) => {
 app.get("/instance/:code/status", async (req, res) => {
   const db = openDb();
   try {
-    await migrate(db);
+    await ensureMigrated(db);
     if (!validateCheckDigit(req.params.code)) {
       return res.status(400).json({ valid: false, error: "Invalid check digit" });
     }
@@ -154,7 +219,7 @@ app.get("/instance/:code/status", async (req, res) => {
     if (expired) return res.status(410).json({ valid: false, error: "Instance expired", ...publicInstance(row) });
     res.json({ valid: true, ...publicInstance(row), ...buildUrls(row.INSTANCE_CODE, row.ADMIN_CODE) });
   } catch (err) {
-    errorResponse(res, err);
+    errorResponse(req, res, err);
   } finally {
     db.close();
   }
@@ -163,7 +228,7 @@ app.get("/instance/:code/status", async (req, res) => {
 app.post("/instance/:code/insert", async (req, res) => {
   const db = openDb();
   try {
-    await migrate(db);
+    await ensureMigrated(db);
     await requireActiveInstance(db, req.params.code);
     const data = req.body.data === undefined ? null : String(req.body.data);
     await run(db, "INSERT INTO DATA (INSTANCE_CODE, NAME, DATA) VALUES (?, ?, ?)", [
@@ -173,7 +238,7 @@ app.post("/instance/:code/insert", async (req, res) => {
     ]);
     res.status(201).json({ status: "created" });
   } catch (err) {
-    errorResponse(res, err);
+    errorResponse(req, res, err);
   } finally {
     db.close();
   }
@@ -182,12 +247,12 @@ app.post("/instance/:code/insert", async (req, res) => {
 app.get("/instance/:code/retrieve", async (req, res) => {
   const db = openDb();
   try {
-    await migrate(db);
+    await ensureMigrated(db);
     await requireActiveInstance(db, req.params.code);
     const rows = await all(db, "SELECT * FROM DATA WHERE INSTANCE_CODE = ? ORDER BY TIMESTAMP ASC, ID ASC", [req.params.code]);
     res.json(rows);
   } catch (err) {
-    errorResponse(res, err);
+    errorResponse(req, res, err);
   } finally {
     db.close();
   }
@@ -196,12 +261,12 @@ app.get("/instance/:code/retrieve", async (req, res) => {
 app.post("/instance/:code/reset", async (req, res) => {
   const db = openDb();
   try {
-    await migrate(db);
+    await ensureMigrated(db);
     const adminCode = req.body.adminCode || req.query.admin;
     const result = await resetInstance(db, req.params.code, adminCode);
     res.json({ status: "reset", ...result });
   } catch (err) {
-    errorResponse(res, err);
+    errorResponse(req, res, err);
   } finally {
     db.close();
   }
@@ -210,12 +275,12 @@ app.post("/instance/:code/reset", async (req, res) => {
 app.get("/instance/:code/admin", async (req, res) => {
   const db = openDb();
   try {
-    await migrate(db);
+    await ensureMigrated(db);
     const row = await requireAdminInstance(db, req.params.code, req.query.admin);
     const rows = await all(db, "SELECT * FROM DATA WHERE INSTANCE_CODE = ? ORDER BY TIMESTAMP ASC, ID ASC", [req.params.code]);
     res.json({ ...publicInstance(row), rows });
   } catch (err) {
-    errorResponse(res, err);
+    errorResponse(req, res, err);
   } finally {
     db.close();
   }
@@ -224,12 +289,12 @@ app.get("/instance/:code/admin", async (req, res) => {
 async function deactivateInstance(req, res) {
   const db = openDb();
   try {
-    await migrate(db);
+    await ensureMigrated(db);
     await requireAdminInstance(db, req.params.code, req.body.adminCode || req.query.admin);
     const result = await run(db, "UPDATE INSTANCES SET ACTIVE = 0 WHERE INSTANCE_CODE = ?", [req.params.code]);
     res.json({ status: "deactivated", deactivatedInstances: result.changes || 0 });
   } catch (err) {
-    errorResponse(res, err);
+    errorResponse(req, res, err);
   } finally {
     db.close();
   }
@@ -241,7 +306,7 @@ app.post("/instance/:code/delete", deactivateInstance);
 app.post("/instance/:code/event/:id/update", async (req, res) => {
   const db = openDb();
   try {
-    await migrate(db);
+    await ensureMigrated(db);
     await requireAdminInstance(db, req.params.code, req.body.adminCode || req.query.admin);
     const data = req.body.data === undefined ? "" : String(req.body.data);
     const result = await run(db, "UPDATE DATA SET DATA = ? WHERE ID = ? AND INSTANCE_CODE = ?", [
@@ -252,7 +317,7 @@ app.post("/instance/:code/event/:id/update", async (req, res) => {
     if (!result.changes) return res.status(404).json({ error: "Event not found" });
     res.json({ status: "updated", updatedRows: result.changes });
   } catch (err) {
-    errorResponse(res, err);
+    errorResponse(req, res, err);
   } finally {
     db.close();
   }
@@ -261,13 +326,13 @@ app.post("/instance/:code/event/:id/update", async (req, res) => {
 app.post("/instance/:code/event/:id/delete", async (req, res) => {
   const db = openDb();
   try {
-    await migrate(db);
+    await ensureMigrated(db);
     await requireAdminInstance(db, req.params.code, req.body.adminCode || req.query.admin);
     const result = await run(db, "DELETE FROM DATA WHERE ID = ? AND INSTANCE_CODE = ?", [req.params.id, req.params.code]);
     if (!result.changes) return res.status(404).json({ error: "Event not found" });
     res.json({ status: "deleted", deletedRows: result.changes });
   } catch (err) {
-    errorResponse(res, err);
+    errorResponse(req, res, err);
   } finally {
     db.close();
   }
@@ -277,13 +342,13 @@ if (config.legacy_routes_enabled) {
   app.post("/insert", async (req, res) => {
     const db = openDb();
     try {
-      await migrate(db);
+      await ensureMigrated(db);
       const name = req.query.name || null;
       const data = req.body.data === undefined ? null : String(req.body.data);
       await run(db, "INSERT INTO DATA (NAME, DATA) VALUES (?, ?)", [name, data]);
       res.status(201).json({ status: "created" });
     } catch (err) {
-      errorResponse(res, err);
+      errorResponse(req, res, err);
     } finally {
       db.close();
     }
@@ -292,14 +357,14 @@ if (config.legacy_routes_enabled) {
   app.get("/retrieve", async (req, res) => {
     const db = openDb();
     try {
-      await migrate(db);
+      await ensureMigrated(db);
       const name = req.query.name;
       const rows = name
         ? await all(db, "SELECT * FROM DATA WHERE NAME = ? ORDER BY TIMESTAMP ASC, ID ASC", [name])
         : await all(db, "SELECT * FROM DATA ORDER BY TIMESTAMP ASC, ID ASC");
       res.json(rows);
     } catch (err) {
-      errorResponse(res, err);
+      errorResponse(req, res, err);
     } finally {
       db.close();
     }
@@ -313,15 +378,20 @@ app.get("/download", async (req, res) => {
   }
   const db = openDb();
   try {
-    await migrate(db);
+    await ensureMigrated(db);
     const rows = await all(db, "SELECT * FROM DATA ORDER BY TIMESTAMP ASC, ID ASC");
     res.setHeader("content-disposition", "attachment; filename=\"data-export.json\"");
     res.json(rows);
   } catch (err) {
-    errorResponse(res, err);
+    errorResponse(req, res, err);
   } finally {
     db.close();
   }
+});
+
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  errorResponse(req, res, err);
 });
 
 const server = http.createServer(app);
@@ -341,7 +411,7 @@ bayeux.attach(server);
 
 async function start() {
   const db = openDb();
-  await migrate(db);
+  await ensureMigrated(db);
   db.close();
 
   const cleanupMs = Number(config.cleanup_interval_minutes || 60) * 60 * 1000;
@@ -350,7 +420,7 @@ async function start() {
     try {
       await cleanupExpired(cleanupDb);
     } catch (err) {
-      console.error("Cleanup failed:", err.message);
+      log("error", "Cleanup failed", { error: err.message, stack: err.stack });
     } finally {
       cleanupDb.close();
     }
@@ -358,7 +428,12 @@ async function start() {
 
   const port = process.env.PORT || config.port;
   server.listen(port, () => {
-    console.log(`Pixel Pandemonium server listening on port ${port}`);
+    log("info", "Pixel Pandemonium server listening", {
+      port: Number(port),
+      databasePath: config.database_path,
+      sqliteBusyTimeoutMs: Number(config.sqlite_busy_timeout_ms || 5000),
+      rateLimitMaxPerMinute: Number(config.rate_limit_max_per_minute || 180)
+    });
   });
 }
 

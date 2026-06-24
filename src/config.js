@@ -8,6 +8,8 @@ const DEFAULTS = {
   client_base_url: "http://localhost:4000",
   default_expiration_hours: 72,
   cleanup_interval_minutes: 60,
+  sqlite_busy_timeout_ms: 5000,
+  rate_limit_max_per_minute: 180,
   download_token: "change-me-before-deploying",
   legacy_routes_enabled: true
 };
@@ -63,11 +65,18 @@ function parseSimpleYaml(text) {
 function loadConfig(configPath = path.join(process.cwd(), "config.yaml")) {
   if (!fs.existsSync(configPath)) return { ...DEFAULTS };
   const parsed = parseSimpleYaml(fs.readFileSync(configPath, "utf8"));
-  return {
+  const config = {
     ...DEFAULTS,
     ...parsed,
     allowed_origins: parsed.allowed_origins || DEFAULTS.allowed_origins
   };
+  if (process.env.PIXEL_PANDEMONIUM_SQLITE_BUSY_TIMEOUT_MS) {
+    config.sqlite_busy_timeout_ms = Number(process.env.PIXEL_PANDEMONIUM_SQLITE_BUSY_TIMEOUT_MS);
+  }
+  if (process.env.PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_MINUTE) {
+    config.rate_limit_max_per_minute = Number(process.env.PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_MINUTE);
+  }
+  return config;
 }
 
 module.exports = { loadConfig, parseSimpleYaml };

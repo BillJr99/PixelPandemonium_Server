@@ -9,6 +9,8 @@ allowed_origins:
 client_base_url: http://localhost:4000
 default_expiration_hours: 72
 cleanup_interval_minutes: 60
+sqlite_busy_timeout_ms: 5000
+rate_limit_max_per_minute: 1000
 download_token: change-me-before-deploying
 legacy_routes_enabled: true
 cloudflare:

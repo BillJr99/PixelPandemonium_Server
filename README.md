@@ -25,6 +25,8 @@ Edit `config.yaml` before running or deploying.
 - `client_base_url`: public base URL of the static client. Returned URLs are built from this.
 - `default_expiration_hours`: default lifetime for a class instance.
 - `cleanup_interval_minutes`: interval for removing expired replay data.
+- `sqlite_busy_timeout_ms`: how long SQLite waits for a locked database before failing a write/read.
+- `rate_limit_max_per_minute`: maximum API requests per client IP per minute.
 - `download_token`: bearer/query token for `/download`.
 - `legacy_routes_enabled`: keeps old `/insert` and `/retrieve` routes available.
 - `cloudflare`: deployment names and D1 database id.
@@ -44,6 +46,27 @@ curl http://localhost:8000/health
 ```
 
 Realtime Faye is mounted at `/faye`.
+
+### Diagnostics
+
+The server logs structured JSON lines to stdout/stderr. Each HTTP request gets a
+`requestId`, start log, finish log, status code, duration, origin, and IP. Server
+errors include the request id, route, status, error code, message, and stack.
+
+Example error response:
+
+```json
+{
+  "valid": false,
+  "error": "SQLITE_BUSY: database is locked",
+  "requestId": "lxp3l9jn-2c"
+}
+```
+
+Use the `requestId` from a browser/client error to find the matching server log.
+For local classroom demos, `config.yaml` sets a higher request limit and a SQLite
+busy timeout so rapid student canvas submissions wait instead of failing during
+brief write contention.
 
 Terminal 2 can run the test harness:
 
