@@ -4,6 +4,7 @@ export interface Env {
   ALLOWED_ORIGINS: string;
   CLIENT_BASE_URL: string;
   DEFAULT_EXPIRATION_HOURS: string;
+  ADMIN_PASSWORD: string;
   DOWNLOAD_TOKEN: string;
   LEGACY_ROUTES_ENABLED: string;
 }
@@ -132,6 +133,16 @@ async function readRequestBody(request: Request): Promise<Record<string, any>> {
   return text ? { data: text } : {};
 }
 
+function adminPasswordFromRequest(request: Request, url: URL, body?: Record<string, any>): string {
+  return request.headers.get("x-admin-password") || body?.adminPassword || url.searchParams.get("adminPassword") || "";
+}
+
+function adminPasswordError(request: Request, env: Env, url: URL, body?: Record<string, any>) {
+  const expected = env.ADMIN_PASSWORD || "admin";
+  if (!expected || adminPasswordFromRequest(request, url, body) === expected) return null;
+  return json(request, env, { error: "Invalid admin password" }, { status: 403 });
+}
+
 async function activeInstance(env: Env, code: string) {
   if (!validateCheckDigit(code)) return { error: "Invalid instance code", status: 400 };
   const row = await env.DB.prepare("SELECT * FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(code).first<any>();
@@ -203,6 +214,8 @@ export default {
       const code = decodeURIComponent(instanceMatch[1]);
       const action = instanceMatch[2];
       if (action === "admin" && request.method === "GET") {
+        const passwordError = adminPasswordError(request, env, url);
+        if (passwordError) return passwordError;
         const found = await adminInstance(env, code, url.searchParams.get("admin"));
         if (found.error) return json(request, env, { error: found.error }, { status: found.status });
         const row = found.row!;
@@ -220,6 +233,8 @@ export default {
 
       if ((action === "deactivate" || action === "delete") && request.method === "POST") {
         const body = await readRequestBody(request);
+        const passwordError = adminPasswordError(request, env, url, body);
+        if (passwordError) return passwordError;
         const found = await adminInstance(env, code, body.adminCode || url.searchParams.get("admin"));
         if (found.error) return json(request, env, { error: found.error }, { status: found.status });
         const result = await env.DB.prepare("UPDATE INSTANCES SET ACTIVE = 0 WHERE INSTANCE_CODE = ?").bind(code).run();
@@ -256,6 +271,8 @@ export default {
 
       if (action === "reset" && request.method === "POST") {
         const body = await readRequestBody(request);
+        const passwordError = adminPasswordError(request, env, url, body);
+        if (passwordError) return passwordError;
         const supplied = body.adminCode || url.searchParams.get("admin");
         if (supplied !== row.ADMIN_CODE) return json(request, env, { error: "Invalid admin code" }, { status: 403 });
         const result = await env.DB.prepare("DELETE FROM DATA WHERE INSTANCE_CODE = ?").bind(code).run();
@@ -269,6 +286,8 @@ export default {
       const id = decodeURIComponent(eventMatch[2]);
       const action = eventMatch[3];
       const body = await readRequestBody(request);
+      const passwordError = adminPasswordError(request, env, url, body);
+      if (passwordError) return passwordError;
       const found = await adminInstance(env, code, body.adminCode || url.searchParams.get("admin"));
       if (found.error) return json(request, env, { error: found.error }, { status: found.status });
       if (action === "update") {

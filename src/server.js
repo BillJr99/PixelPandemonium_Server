@@ -83,6 +83,19 @@ function publicInstance(row) {
   };
 }
 
+function adminPasswordFromRequest(req) {
+  return req.get("x-admin-password") || (req.body && req.body.adminPassword) || req.query.adminPassword || "";
+}
+
+function requireAdminPassword(req) {
+  const expected = String(config.admin_password || "");
+  if (!expected) return;
+  if (String(adminPasswordFromRequest(req)) === expected) return;
+  const err = new Error("Invalid admin password");
+  err.status = 403;
+  throw err;
+}
+
 function errorResponse(req, res, err) {
   const status = err.status || 500;
   const requestId = req && req.requestId;
@@ -263,6 +276,7 @@ app.post("/instance/:code/reset", async (req, res) => {
   try {
     await ensureMigrated(db);
     const adminCode = req.body.adminCode || req.query.admin;
+    requireAdminPassword(req);
     const result = await resetInstance(db, req.params.code, adminCode);
     res.json({ status: "reset", ...result });
   } catch (err) {
@@ -276,6 +290,7 @@ app.get("/instance/:code/admin", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
+    requireAdminPassword(req);
     const row = await requireAdminInstance(db, req.params.code, req.query.admin);
     const rows = await all(db, "SELECT * FROM DATA WHERE INSTANCE_CODE = ? ORDER BY TIMESTAMP ASC, ID ASC", [req.params.code]);
     res.json({ ...publicInstance(row), rows });
@@ -290,6 +305,7 @@ async function deactivateInstance(req, res) {
   const db = openDb();
   try {
     await ensureMigrated(db);
+    requireAdminPassword(req);
     await requireAdminInstance(db, req.params.code, req.body.adminCode || req.query.admin);
     const result = await run(db, "UPDATE INSTANCES SET ACTIVE = 0 WHERE INSTANCE_CODE = ?", [req.params.code]);
     res.json({ status: "deactivated", deactivatedInstances: result.changes || 0 });
@@ -307,6 +323,7 @@ app.post("/instance/:code/event/:id/update", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
+    requireAdminPassword(req);
     await requireAdminInstance(db, req.params.code, req.body.adminCode || req.query.admin);
     const data = req.body.data === undefined ? "" : String(req.body.data);
     const result = await run(db, "UPDATE DATA SET DATA = ? WHERE ID = ? AND INSTANCE_CODE = ?", [
@@ -327,6 +344,7 @@ app.post("/instance/:code/event/:id/delete", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
+    requireAdminPassword(req);
     await requireAdminInstance(db, req.params.code, req.body.adminCode || req.query.admin);
     const result = await run(db, "DELETE FROM DATA WHERE ID = ? AND INSTANCE_CODE = ?", [req.params.id, req.params.code]);
     if (!result.changes) return res.status(404).json({ error: "Event not found" });

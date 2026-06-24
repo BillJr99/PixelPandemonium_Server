@@ -17,7 +17,7 @@ npm install
 
 ## Configuration
 
-Edit `config.yaml` before running or deploying.
+Edit `config.yaml` and `.env` before running or deploying.
 
 - `port`: local Express port.
 - `database_path`: SQLite database path for local/Node hosting.
@@ -27,9 +27,21 @@ Edit `config.yaml` before running or deploying.
 - `cleanup_interval_minutes`: interval for removing expired replay data.
 - `sqlite_busy_timeout_ms`: how long SQLite waits for a locked database before failing a write/read.
 - `rate_limit_max_per_minute`: maximum API requests per client IP per minute.
+- `admin_password`: shared admin password, normally loaded from `.env`.
 - `download_token`: bearer/query token for `/download`.
 - `legacy_routes_enabled`: keeps old `/insert` and `/retrieve` routes available.
 - `cloudflare`: deployment names and D1 database id.
+
+`.env` contains local secrets and defaults:
+
+```bash
+ADMIN_PASSWORD=admin
+DOWNLOAD_TOKEN=change-me-before-deploying
+```
+
+The committed values are intentionally simple local defaults. Change both values
+before public deployment. Environment variables override `config.yaml`; for
+example, set `ADMIN_PASSWORD` or `PIXEL_PANDEMONIUM_ADMIN_PASSWORD` in production.
 
 ## Local Run
 
@@ -46,6 +58,20 @@ curl http://localhost:8000/health
 ```
 
 Realtime Faye is mounted at `/faye`.
+
+## Admin Access
+
+Admin access currently has two checks:
+
+1. A per-instance `adminCode`, generated when the teacher creates an instance.
+   This code scopes access to one specific instance and appears in the generated
+   admin URL.
+2. A shared admin password from `.env`/environment configuration. Local default:
+   `admin`.
+
+Admin APIs accept the shared password as `adminPassword` in the JSON body, as an
+`adminPassword` query parameter, or as the `X-Admin-Password` header. The browser
+admin page prompts for it when it is not already in the URL/session.
 
 ### Diagnostics
 
@@ -132,13 +158,13 @@ curl http://localhost:8000/instance/INSTANCE-CODE/retrieve \
 curl -X POST http://localhost:8000/instance/INSTANCE-CODE/reset \
   -H 'Origin: http://localhost:4000' \
   -H 'Content-Type: application/json' \
-  -d '{"adminCode":"ADMIN-CODE"}'
+  -d '{"adminCode":"ADMIN-CODE","adminPassword":"admin"}'
 ```
 
 ### Admin inspect an instance
 
 ```bash
-curl "http://localhost:8000/instance/INSTANCE-CODE/admin?admin=ADMIN-CODE" \
+curl "http://localhost:8000/instance/INSTANCE-CODE/admin?admin=ADMIN-CODE&adminPassword=admin" \
   -H 'Origin: http://localhost:4000'
 ```
 
@@ -150,7 +176,7 @@ Returns instance metadata plus replay rows. This is used by `admin.html`.
 curl -X POST http://localhost:8000/instance/INSTANCE-CODE/event/ROW-ID/update \
   -H 'Origin: http://localhost:4000' \
   -H 'Content-Type: application/json' \
-  -d '{"adminCode":"ADMIN-CODE","data":"0,0,10,10,#00ff00,0,0"}'
+  -d '{"adminCode":"ADMIN-CODE","adminPassword":"admin","data":"0,0,10,10,#00ff00,0,0"}'
 ```
 
 ### Delete one replay row
@@ -159,7 +185,7 @@ curl -X POST http://localhost:8000/instance/INSTANCE-CODE/event/ROW-ID/update \
 curl -X POST http://localhost:8000/instance/INSTANCE-CODE/event/ROW-ID/delete \
   -H 'Origin: http://localhost:4000' \
   -H 'Content-Type: application/json' \
-  -d '{"adminCode":"ADMIN-CODE"}'
+  -d '{"adminCode":"ADMIN-CODE","adminPassword":"admin"}'
 ```
 
 ### Deactivate an instance
@@ -168,7 +194,7 @@ curl -X POST http://localhost:8000/instance/INSTANCE-CODE/event/ROW-ID/delete \
 curl -X POST http://localhost:8000/instance/INSTANCE-CODE/deactivate \
   -H 'Origin: http://localhost:4000' \
   -H 'Content-Type: application/json' \
-  -d '{"adminCode":"ADMIN-CODE"}'
+  -d '{"adminCode":"ADMIN-CODE","adminPassword":"admin"}'
 ```
 
 Deactivate is a soft delete. It sets `ACTIVE = 0`, preserves the instance row and replay data, and makes the instance behave as not found for student/status/replay access. The legacy `/instance/:code/delete` route is retained as an alias for deactivation.

@@ -10,6 +10,7 @@ const DEFAULTS = {
   cleanup_interval_minutes: 60,
   sqlite_busy_timeout_ms: 5000,
   rate_limit_max_per_minute: 180,
+  admin_password: "admin",
   download_token: "change-me-before-deploying",
   legacy_routes_enabled: true
 };
@@ -62,7 +63,28 @@ function parseSimpleYaml(text) {
   return result;
 }
 
+function parseEnvFile(text) {
+  const result = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const index = line.indexOf("=");
+    if (index < 0) continue;
+    const key = line.slice(0, index).trim();
+    const value = line.slice(index + 1).trim().replace(/^["']|["']$/g, "");
+    if (key) result[key] = value;
+  }
+  return result;
+}
+
 function loadConfig(configPath = path.join(process.cwd(), "config.yaml")) {
+  const envPath = path.join(path.dirname(configPath), ".env");
+  if (fs.existsSync(envPath)) {
+    const parsedEnv = parseEnvFile(fs.readFileSync(envPath, "utf8"));
+    for (const [key, value] of Object.entries(parsedEnv)) {
+      if (process.env[key] === undefined) process.env[key] = String(value);
+    }
+  }
   if (!fs.existsSync(configPath)) return { ...DEFAULTS };
   const parsed = parseSimpleYaml(fs.readFileSync(configPath, "utf8"));
   const config = {
@@ -76,7 +98,16 @@ function loadConfig(configPath = path.join(process.cwd(), "config.yaml")) {
   if (process.env.PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_MINUTE) {
     config.rate_limit_max_per_minute = Number(process.env.PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_MINUTE);
   }
+  if (process.env.PIXEL_PANDEMONIUM_ADMIN_PASSWORD) {
+    config.admin_password = process.env.PIXEL_PANDEMONIUM_ADMIN_PASSWORD;
+  }
+  if (process.env.ADMIN_PASSWORD) {
+    config.admin_password = process.env.ADMIN_PASSWORD;
+  }
+  if (process.env.DOWNLOAD_TOKEN) {
+    config.download_token = process.env.DOWNLOAD_TOKEN;
+  }
   return config;
 }
 
-module.exports = { loadConfig, parseSimpleYaml };
+module.exports = { loadConfig, parseSimpleYaml, parseEnvFile };
