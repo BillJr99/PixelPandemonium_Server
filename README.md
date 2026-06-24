@@ -17,7 +17,7 @@ npm install
 
 ## Configuration
 
-Edit `config.yaml` and `.env` before running or deploying.
+Edit `config.yaml` and create a local `.env` before running or deploying.
 
 - `port`: local Express port.
 - `database_path`: SQLite database path for local/Node hosting.
@@ -27,21 +27,36 @@ Edit `config.yaml` and `.env` before running or deploying.
 - `cleanup_interval_minutes`: interval for removing expired replay data.
 - `sqlite_busy_timeout_ms`: how long SQLite waits for a locked database before failing a write/read.
 - `rate_limit_max_per_minute`: maximum API requests per client IP per minute.
-- `admin_password`: shared admin password, normally loaded from `.env`.
-- `download_token`: bearer/query token for `/download`.
+- `admin_password`: shared admin password, normally loaded from `.env` or the environment.
+- `download_token`: bearer/query token for `/download`, loaded from `.env`, the environment, or `config.yaml`.
 - `legacy_routes_enabled`: keeps old `/insert` and `/retrieve` routes available.
 - `cloudflare`: deployment names and D1 database id.
 
-`.env` contains local secrets and defaults:
+Secrets are configured with environment variables. Copy `.env.example` to `.env`
+for local development:
+
+```bash
+cp .env.example .env
+```
+
+The `.env` format is simple `KEY=value` lines:
 
 ```bash
 ADMIN_PASSWORD=admin
 DOWNLOAD_TOKEN=change-me-before-deploying
 ```
 
-The committed values are intentionally simple local defaults. Change both values
-before public deployment. Environment variables override `config.yaml`; for
-example, set `ADMIN_PASSWORD` or `PIXEL_PANDEMONIUM_ADMIN_PASSWORD` in production.
+The committed `.env.example` values are intentionally simple local defaults.
+`.env` itself is ignored by git and should contain machine-specific secrets.
+Change both production secret values before public deployment:
+
+- `ADMIN_PASSWORD`: the shared password required by teacher/admin APIs.
+- `DOWNLOAD_TOKEN`: the bearer/query token required by `/download`.
+
+Environment variables override `config.yaml`; for example, set `ADMIN_PASSWORD`
+or `PIXEL_PANDEMONIUM_ADMIN_PASSWORD` in production. For Cloudflare Workers,
+also replace the placeholder values in `wrangler.jsonc` or configure secrets in
+the deployed environment.
 
 ## Local Run
 
