@@ -10,6 +10,9 @@ const DEFAULTS = {
   cleanup_interval_minutes: 60,
   sqlite_busy_timeout_ms: 5000,
   rate_limit_max_per_minute: 180,
+  auth_failure_limit: 5,
+  auth_failure_window_minutes: 10,
+  auth_ban_days: 1,
   admin_password: "admin",
   download_token: "change-me-before-deploying",
   legacy_routes_enabled: true
@@ -98,6 +101,15 @@ function loadConfig(configPath = path.join(process.cwd(), "config.yaml")) {
   if (process.env.PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_MINUTE) {
     config.rate_limit_max_per_minute = Number(process.env.PIXEL_PANDEMONIUM_RATE_LIMIT_MAX_PER_MINUTE);
   }
+  if (process.env.PIXEL_PANDEMONIUM_AUTH_FAILURE_LIMIT) {
+    config.auth_failure_limit = Number(process.env.PIXEL_PANDEMONIUM_AUTH_FAILURE_LIMIT);
+  }
+  if (process.env.PIXEL_PANDEMONIUM_AUTH_FAILURE_WINDOW_MINUTES) {
+    config.auth_failure_window_minutes = Number(process.env.PIXEL_PANDEMONIUM_AUTH_FAILURE_WINDOW_MINUTES);
+  }
+  if (process.env.PIXEL_PANDEMONIUM_AUTH_BAN_DAYS) {
+    config.auth_ban_days = Number(process.env.PIXEL_PANDEMONIUM_AUTH_BAN_DAYS);
+  }
   if (process.env.PIXEL_PANDEMONIUM_ADMIN_PASSWORD) {
     config.admin_password = process.env.PIXEL_PANDEMONIUM_ADMIN_PASSWORD;
   }
@@ -106,6 +118,15 @@ function loadConfig(configPath = path.join(process.cwd(), "config.yaml")) {
   }
   if (process.env.DOWNLOAD_TOKEN) {
     config.download_token = process.env.DOWNLOAD_TOKEN;
+  }
+  if (process.env.AUTH_FAILURE_LIMIT) {
+    config.auth_failure_limit = Number(process.env.AUTH_FAILURE_LIMIT);
+  }
+  if (process.env.AUTH_FAILURE_WINDOW_MINUTES) {
+    config.auth_failure_window_minutes = Number(process.env.AUTH_FAILURE_WINDOW_MINUTES);
+  }
+  if (process.env.AUTH_BAN_DAYS) {
+    config.auth_ban_days = Number(process.env.AUTH_BAN_DAYS);
   }
   return config;
 }

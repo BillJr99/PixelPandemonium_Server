@@ -45,12 +45,23 @@ test("migrate seeds original CS173 picture inventory", async () => {
   assert.equal(pictures.length, 16);
   assert.ok(pictures.some((picture) => picture.id === "tetris"));
   assert.ok(pictures.some((picture) => picture.id === "yellowsubmarine2022"));
+  const demo = await getInstance(db, "tetris");
+  assert.equal(demo.PICTURE_ID, "tetris");
+  assert.equal(demo.INSTANCE_NAME, "tetris");
+  assert.equal(demo.ACTIVE, 1);
+  assert.equal(validateCheckDigit("tetris"), true);
   db.close();
 });
 
 test("generated instance codes include a valid check digit", () => {
   const code = generateInstanceCode("tetris", "Ada Lovelace", "2026-06-23T10:30:00");
   assert.match(code, /^TET-ADAL-0623-1030-\d{2}-\d$/);
+  assert.equal(validateCheckDigit(code), true);
+});
+
+test("generated instance codes validate when picture or teacher tokens contain digits", () => {
+  const code = generateInstanceCode("custom-2026", "2026", "2026-06-24T14:48:00");
+  assert.match(code, /^CUS-2026-0624-1448-\d{2}-\d$/);
   assert.equal(validateCheckDigit(code), true);
 });
 
@@ -80,8 +91,53 @@ test("createInstance stores active instance metadata", async () => {
 
   const row = await getInstance(db, created.instanceCode);
   assert.equal(row.PICTURE_ID, "tetris");
+  assert.equal(row.INSTANCE_NAME, created.instanceCode);
+  assert.match(created.accessKey, /^[A-F0-9]{16}$/);
+  assert.match(created.teacherKey, /^[A-F0-9]{16}$/);
+  assert.equal(row.ACCESS_KEY, created.accessKey);
+  assert.equal(row.TEACHER_KEY, created.teacherKey);
   assert.equal(row.TEACHER_NAME, "Ada Lovelace");
   assert.deepEqual(await requireActiveInstance(db, created.instanceCode), row);
+  db.close();
+});
+
+test("createInstance enforces unique instance names", async () => {
+  const db = memoryDb();
+  await migrate(db);
+  await createInstance(db, {
+    pictureId: "tetris",
+    instanceName: "period-1",
+    teacherName: "Ada Lovelace",
+    dateTime: "2026-06-23T10:30:00",
+    expirationHours: 1
+  }, config);
+
+  await assert.rejects(
+    createInstance(db, {
+      pictureId: "tetris",
+      instanceName: "period-1",
+      teacherName: "Grace Hopper",
+      dateTime: "2026-06-23T11:30:00",
+      expirationHours: 1
+    }, config),
+    /Instance name already exists/
+  );
+  db.close();
+});
+
+test("createInstance rejects reserved demo instance names", async () => {
+  const db = memoryDb();
+  await migrate(db);
+  await assert.rejects(
+    createInstance(db, {
+      pictureId: "tetris",
+      instanceName: "tetris",
+      teacherName: "Ada Lovelace",
+      dateTime: "2026-06-23T10:30:00",
+      expirationHours: 1
+    }, config),
+    /Instance name is reserved/
+  );
   db.close();
 });
 

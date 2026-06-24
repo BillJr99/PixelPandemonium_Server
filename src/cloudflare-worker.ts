@@ -7,6 +7,9 @@ export interface Env {
   ADMIN_PASSWORD: string;
   DOWNLOAD_TOKEN: string;
   LEGACY_ROUTES_ENABLED: string;
+  AUTH_FAILURE_LIMIT: string;
+  AUTH_FAILURE_WINDOW_MINUTES: string;
+  AUTH_BAN_DAYS: string;
 }
 
 interface ClientAttachment {
@@ -47,7 +50,7 @@ function corsHeaders(request: Request, env: Env): HeadersInit {
   return {
     "access-control-allow-origin": origin && originAllowed(request, env) ? origin : "*",
     "access-control-allow-methods": "GET, POST, OPTIONS",
-    "access-control-allow-headers": "Content-Type, Authorization, X-Requested-With",
+    "access-control-allow-headers": "Content-Type, Authorization, X-Requested-With, X-Instance-Key, X-Teacher-Key, X-Admin-Password",
     "access-control-allow-credentials": "true"
   };
 }
@@ -84,8 +87,11 @@ function luhnCheckDigit(payloadDigits: string): string {
 }
 
 function validateCheckDigit(code: string): boolean {
+  if (String(code || "").toLowerCase() === "tetris") return true;
   const digits = digitsOnly(code);
-  return digits.length >= 2 && luhnCheckDigit(digits.slice(0, -1)) === digits.slice(-1);
+  if (digits.length < 11) return false;
+  const suffix = digits.slice(-11);
+  return luhnCheckDigit(suffix.slice(0, -1)) === suffix.slice(-1);
 }
 
 function normalizeToken(value: string, fallback: string, length: number): string {
@@ -113,12 +119,27 @@ function adminCode(): string {
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
 }
 
-function urls(env: Env, instanceCode: string, admin: string) {
+function accessKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+function studentUrls(env: Env, instanceCode: string, key: string) {
   const base = (env.CLIENT_BASE_URL || "").replace(/\/$/, "");
+  const encodedKey = encodeURIComponent(key || "");
   return {
-    studentUrl: `${base}/instructions.html?instance=${encodeURIComponent(instanceCode)}`,
-    replayUrl: `${base}/replay.html?instance=${encodeURIComponent(instanceCode)}`,
-    adminUrl: `${base}/admin.html?instance=${encodeURIComponent(instanceCode)}&admin=${encodeURIComponent(admin)}`
+    studentUrl: `${base}/instructions.html?instance=${encodeURIComponent(instanceCode)}&key=${encodedKey}`,
+    replayUrl: `${base}/replay.html?instance=${encodeURIComponent(instanceCode)}&key=${encodedKey}`
+  };
+}
+
+function urls(env: Env, instanceCode: string, admin: string, key: string, teacherKey: string) {
+  const base = (env.CLIENT_BASE_URL || "").replace(/\/$/, "");
+  const encodedTeacherKey = encodeURIComponent(teacherKey || "");
+  return {
+    ...studentUrls(env, instanceCode, key),
+    teacherUrl: `${base}/teacher-dashboard.html?instance=${encodeURIComponent(instanceCode)}&teacherKey=${encodedTeacherKey}&admin=${encodeURIComponent(admin)}`,
+    adminUrl: `${base}/admin.html?instance=${encodeURIComponent(instanceCode)}&teacherKey=${encodedTeacherKey}&admin=${encodeURIComponent(admin)}`
   };
 }
 
@@ -143,6 +164,26 @@ function adminPasswordError(request: Request, env: Env, url: URL, body?: Record<
   return json(request, env, { error: "Invalid admin password" }, { status: 403 });
 }
 
+function accessKeyFromRequest(request: Request, url: URL, body?: Record<string, any>): string {
+  return request.headers.get("x-instance-key") || body?.accessKey || url.searchParams.get("key") || url.searchParams.get("accessKey") || "";
+}
+
+function teacherKeyFromRequest(request: Request, url: URL, body?: Record<string, any>): string {
+  return request.headers.get("x-teacher-key") || body?.teacherKey || url.searchParams.get("teacherKey") || "";
+}
+
+function instanceAccessError(request: Request, env: Env, url: URL, row: any, body?: Record<string, any>) {
+  if (row.INSTANCE_CODE === "tetris" && row.PICTURE_ID === "tetris") return null;
+  if (accessKeyFromRequest(request, url, body) === String(row.ACCESS_KEY || "")) return null;
+  return json(request, env, { error: "Invalid instance access key" }, { status: 403 });
+}
+
+function teacherAccessError(request: Request, env: Env, url: URL, row: any, body?: Record<string, any>) {
+  if (row.INSTANCE_CODE === "tetris" && row.PICTURE_ID === "tetris") return null;
+  if (teacherKeyFromRequest(request, url, body) === String(row.TEACHER_KEY || "")) return null;
+  return json(request, env, { error: "Invalid teacher key" }, { status: 403 });
+}
+
 async function activeInstance(env: Env, code: string) {
   if (!validateCheckDigit(code)) return { error: "Invalid instance code", status: 400 };
   const row = await env.DB.prepare("SELECT * FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(code).first<any>();
@@ -156,6 +197,7 @@ async function adminInstance(env: Env, code: string, admin: string | null) {
   if (!validateCheckDigit(code)) return { error: "Invalid instance code", status: 400 };
   const row = await env.DB.prepare("SELECT * FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(code).first<any>();
   if (!row || row.ACTIVE === 0) return { error: "Instance not found", status: 404 };
+  if (row.INSTANCE_CODE === "tetris" && row.PICTURE_ID === "tetris") return { row };
   if (row.ADMIN_CODE !== admin) return { error: "Invalid admin code", status: 403 };
   return { row };
 }
@@ -171,6 +213,21 @@ async function ensurePictures(env: Env): Promise<void> {
          ENABLED = 1`
     ).bind(picture.id, picture.title, picture.script).run();
   }
+  await env.DB.prepare("UPDATE INSTANCES SET INSTANCE_NAME = INSTANCE_CODE WHERE LOWER(INSTANCE_NAME) = 'tetris' AND INSTANCE_CODE <> 'tetris'").run();
+  await env.DB.prepare(
+    `INSERT INTO INSTANCES
+      (INSTANCE_CODE, ADMIN_CODE, INSTANCE_NAME, ACCESS_KEY, TEACHER_KEY, PICTURE_ID, TEACHER_NAME, REQUESTED_DATETIME, EXPIRES_AT, ACTIVE)
+      VALUES ('tetris', 'tetris-demo', 'tetris', '', '', 'tetris', 'Public Demo', '2026-01-01T00:00:00', '9999-12-31T23:59:59.999Z', 1)
+      ON CONFLICT(INSTANCE_CODE) DO UPDATE SET
+        ADMIN_CODE = excluded.ADMIN_CODE,
+        INSTANCE_NAME = excluded.INSTANCE_NAME,
+        ACCESS_KEY = '',
+        TEACHER_KEY = '',
+        PICTURE_ID = 'tetris',
+        TEACHER_NAME = 'Public Demo',
+        EXPIRES_AT = excluded.EXPIRES_AT,
+        ACTIVE = 1`
+  ).run();
 }
 
 export default {
@@ -200,45 +257,83 @@ export default {
       const picture = await env.DB.prepare("SELECT ID FROM PICTURES WHERE ID = ? AND ENABLED = 1").bind(body.pictureId).first();
       if (!picture) return json(request, env, { error: "Unknown pictureId" }, { status: 400 });
       const code = generateInstanceCode(body.pictureId, body.teacherName, body.dateTime);
+      const instanceName = String(body.instanceName || code).trim();
+      if (instanceName.toLowerCase() === "tetris") return json(request, env, { error: "Instance name is reserved" }, { status: 409 });
+      const existingName = await env.DB.prepare("SELECT ID FROM INSTANCES WHERE INSTANCE_NAME = ?").bind(instanceName).first();
+      if (existingName) return json(request, env, { error: "Instance name already exists" }, { status: 409 });
       const admin = adminCode();
+      const key = accessKey();
+      const teacherKey = accessKey();
       const hours = Number(body.expirationHours || env.DEFAULT_EXPIRATION_HOURS || 72);
       const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
       await env.DB.prepare(
-        "INSERT INTO INSTANCES (INSTANCE_CODE, ADMIN_CODE, PICTURE_ID, TEACHER_NAME, REQUESTED_DATETIME, EXPIRES_AT) VALUES (?, ?, ?, ?, ?, ?)"
-      ).bind(code, admin, body.pictureId, body.teacherName, body.dateTime, expiresAt).run();
-      return json(request, env, { instanceCode: code, adminCode: admin, pictureId: body.pictureId, teacherName: body.teacherName, requestedDateTime: body.dateTime, expiresAt, ...urls(env, code, admin) }, { status: 201 });
+        "INSERT INTO INSTANCES (INSTANCE_CODE, ADMIN_CODE, INSTANCE_NAME, ACCESS_KEY, TEACHER_KEY, PICTURE_ID, TEACHER_NAME, REQUESTED_DATETIME, EXPIRES_AT) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).bind(code, admin, instanceName, key, teacherKey, body.pictureId, body.teacherName, body.dateTime, expiresAt).run();
+      return json(request, env, { instanceCode: code, adminCode: admin, accessKey: key, teacherKey, instanceName, pictureId: body.pictureId, teacherName: body.teacherName, requestedDateTime: body.dateTime, expiresAt, ...urls(env, code, admin, key, teacherKey) }, { status: 201 });
     }
 
-    const instanceMatch = url.pathname.match(/^\/instance\/([^/]+)\/(status|insert|retrieve|reset|admin|deactivate|delete)$/);
+    const instanceMatch = url.pathname.match(/^\/instance\/([^/]+)\/(status|insert|retrieve|reset|admin|deactivate|delete|rotate-key)$/);
     if (instanceMatch) {
       const code = decodeURIComponent(instanceMatch[1]);
       const action = instanceMatch[2];
       if (action === "admin" && request.method === "GET") {
-        const passwordError = adminPasswordError(request, env, url);
+        const passwordError = code === "tetris" ? null : adminPasswordError(request, env, url);
         if (passwordError) return passwordError;
         const found = await adminInstance(env, code, url.searchParams.get("admin"));
         if (found.error) return json(request, env, { error: found.error }, { status: found.status });
         const row = found.row!;
+        const teacherError = teacherAccessError(request, env, url, row);
+        if (teacherError) return teacherError;
         const result = await env.DB.prepare("SELECT * FROM DATA WHERE INSTANCE_CODE = ? ORDER BY TIMESTAMP ASC, ID ASC").bind(code).all();
         return json(request, env, {
           instanceCode: row.INSTANCE_CODE,
+          instanceName: row.INSTANCE_NAME || row.INSTANCE_CODE,
           pictureId: row.PICTURE_ID,
           teacherName: row.TEACHER_NAME,
           requestedDateTime: row.REQUESTED_DATETIME,
           createdAt: row.CREATED_AT,
           expiresAt: row.EXPIRES_AT,
+          accessKey: row.ACCESS_KEY,
+          ...urls(env, row.INSTANCE_CODE, row.ADMIN_CODE, row.ACCESS_KEY, row.TEACHER_KEY),
           rows: result.results
         });
       }
 
       if ((action === "deactivate" || action === "delete") && request.method === "POST") {
+        if (code === "tetris") return json(request, env, { error: "The public Tetris demo cannot be deactivated" }, { status: 403 });
         const body = await readRequestBody(request);
         const passwordError = adminPasswordError(request, env, url, body);
         if (passwordError) return passwordError;
         const found = await adminInstance(env, code, body.adminCode || url.searchParams.get("admin"));
         if (found.error) return json(request, env, { error: found.error }, { status: found.status });
+        const teacherError = teacherAccessError(request, env, url, found.row, body);
+        if (teacherError) return teacherError;
         const result = await env.DB.prepare("UPDATE INSTANCES SET ACTIVE = 0 WHERE INSTANCE_CODE = ?").bind(code).run();
         return json(request, env, { status: "deactivated", deactivatedInstances: result.meta.changes || 0 });
+      }
+
+      if (action === "rotate-key" && request.method === "POST") {
+        if (code === "tetris") return json(request, env, { error: "The public Tetris demo does not use keys" }, { status: 403 });
+        const body = await readRequestBody(request);
+        const passwordError = adminPasswordError(request, env, url, body);
+        if (passwordError) return passwordError;
+        const found = await adminInstance(env, code, body.adminCode || url.searchParams.get("admin"));
+        if (found.error) return json(request, env, { error: found.error }, { status: found.status });
+        const teacherError = teacherAccessError(request, env, url, found.row, body);
+        if (teacherError) return teacherError;
+        const keyType = String(body.keyType || url.searchParams.get("keyType") || "");
+        if (keyType !== "student" && keyType !== "teacher") return json(request, env, { error: "keyType must be student or teacher" }, { status: 400 });
+        const newKey = accessKey();
+        const column = keyType === "student" ? "ACCESS_KEY" : "TEACHER_KEY";
+        await env.DB.prepare(`UPDATE INSTANCES SET ${column} = ? WHERE INSTANCE_CODE = ?`).bind(newKey, code).run();
+        const updated = await env.DB.prepare("SELECT * FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(code).first<any>();
+        return json(request, env, {
+          status: "rotated",
+          keyType,
+          accessKey: updated.ACCESS_KEY,
+          teacherKey: updated.TEACHER_KEY,
+          ...urls(env, updated.INSTANCE_CODE, updated.ADMIN_CODE, updated.ACCESS_KEY, updated.TEACHER_KEY)
+        });
       }
 
       const found = await activeInstance(env, code);
@@ -246,35 +341,44 @@ export default {
       const row = found.row!;
 
       if (action === "status" && request.method === "GET") {
+        const accessError = instanceAccessError(request, env, url, row);
+        if (accessError) return accessError;
         return json(request, env, {
           valid: true,
           instanceCode: row.INSTANCE_CODE,
+          instanceName: row.INSTANCE_NAME || row.INSTANCE_CODE,
           pictureId: row.PICTURE_ID,
           teacherName: row.TEACHER_NAME,
           requestedDateTime: row.REQUESTED_DATETIME,
           createdAt: row.CREATED_AT,
           expiresAt: row.EXPIRES_AT,
-          ...urls(env, row.INSTANCE_CODE, row.ADMIN_CODE)
+          ...studentUrls(env, row.INSTANCE_CODE, row.ACCESS_KEY)
         });
       }
 
       if (action === "insert" && request.method === "POST") {
         const body = await readRequestBody(request);
+        const accessError = instanceAccessError(request, env, url, row, body);
+        if (accessError) return accessError;
         await env.DB.prepare("INSERT INTO DATA (INSTANCE_CODE, NAME, DATA) VALUES (?, ?, ?)").bind(code, code, body.data ?? null).run();
         return json(request, env, { status: "created" }, { status: 201 });
       }
 
       if (action === "retrieve" && request.method === "GET") {
+        const accessError = instanceAccessError(request, env, url, row);
+        if (accessError) return accessError;
         const result = await env.DB.prepare("SELECT * FROM DATA WHERE INSTANCE_CODE = ? ORDER BY TIMESTAMP ASC, ID ASC").bind(code).all();
         return json(request, env, result.results);
       }
 
       if (action === "reset" && request.method === "POST") {
         const body = await readRequestBody(request);
-        const passwordError = adminPasswordError(request, env, url, body);
+        const passwordError = code === "tetris" ? null : adminPasswordError(request, env, url, body);
         if (passwordError) return passwordError;
         const supplied = body.adminCode || url.searchParams.get("admin");
-        if (supplied !== row.ADMIN_CODE) return json(request, env, { error: "Invalid admin code" }, { status: 403 });
+        if (code !== "tetris" && supplied !== row.ADMIN_CODE) return json(request, env, { error: "Invalid admin code" }, { status: 403 });
+        const teacherError = code === "tetris" ? null : teacherAccessError(request, env, url, row, body);
+        if (teacherError) return teacherError;
         const result = await env.DB.prepare("DELETE FROM DATA WHERE INSTANCE_CODE = ?").bind(code).run();
         return json(request, env, { status: "reset", deletedRows: result.meta.changes || 0 });
       }
@@ -290,6 +394,8 @@ export default {
       if (passwordError) return passwordError;
       const found = await adminInstance(env, code, body.adminCode || url.searchParams.get("admin"));
       if (found.error) return json(request, env, { error: found.error }, { status: found.status });
+      const teacherError = teacherAccessError(request, env, url, found.row, body);
+      if (teacherError) return teacherError;
       if (action === "update") {
         const result = await env.DB.prepare("UPDATE DATA SET DATA = ? WHERE ID = ? AND INSTANCE_CODE = ?").bind(body.data ?? "", id, code).run();
         if (!result.meta.changes) return json(request, env, { error: "Event not found" }, { status: 404 });

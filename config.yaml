@@ -11,6 +11,9 @@ default_expiration_hours: 72
 cleanup_interval_minutes: 60
 sqlite_busy_timeout_ms: 5000
 rate_limit_max_per_minute: 1000
+auth_failure_limit: 5
+auth_failure_window_minutes: 10
+auth_ban_days: 1
 download_token: change-me-before-deploying
 legacy_routes_enabled: true
 cloudflare:

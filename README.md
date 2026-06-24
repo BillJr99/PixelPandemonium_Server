@@ -34,6 +34,9 @@ Edit `config.yaml` and create a local `.env` before running or deploying.
 - `cleanup_interval_minutes`: interval for removing expired replay data.
 - `sqlite_busy_timeout_ms`: how long SQLite waits for a locked database before failing a write/read.
 - `rate_limit_max_per_minute`: maximum API requests per client IP per minute.
+- `auth_failure_limit`: failed key/password attempts allowed in the auth-failure window.
+- `auth_failure_window_minutes`: minutes in the auth-failure counting window.
+- `auth_ban_days`: days to temporarily ban an IP after too many failures.
 - `admin_password`: shared admin password, normally loaded from `.env` or the environment.
 - `download_token`: bearer/query token for `/download`, loaded from `.env`, the environment, or `config.yaml`.
 - `legacy_routes_enabled`: keeps old `/insert` and `/retrieve` routes available.
@@ -51,6 +54,9 @@ The `.env` format is simple `KEY=value` lines:
 ```bash
 ADMIN_PASSWORD=admin
 DOWNLOAD_TOKEN=change-me-before-deploying
+AUTH_FAILURE_LIMIT=5
+AUTH_FAILURE_WINDOW_MINUTES=10
+AUTH_BAN_DAYS=1
 ```
 
 The committed `.env.example` values are intentionally simple local defaults.
@@ -59,6 +65,9 @@ Change both production secret values before public deployment:
 
 - `ADMIN_PASSWORD`: the shared password required by teacher/admin APIs.
 - `DOWNLOAD_TOKEN`: the bearer/query token required by `/download`.
+- `AUTH_FAILURE_LIMIT`: failed key/password attempts before a temporary IP ban.
+- `AUTH_FAILURE_WINDOW_MINUTES`: minutes in the auth-failure counting window.
+- `AUTH_BAN_DAYS`: days to ban an IP after too many failures.
 
 Environment variables override `config.yaml`; for example, set `ADMIN_PASSWORD`
 or `PIXEL_PANDEMONIUM_ADMIN_PASSWORD` in production. For Cloudflare Workers,
@@ -83,17 +92,39 @@ Realtime Faye is mounted at `/faye`.
 
 ## Admin Access
 
-Admin access currently has two checks:
+Admin access currently has three checks:
 
 1. A per-instance `adminCode`, generated when the teacher creates an instance.
    This code scopes access to one specific instance and appears in the generated
    admin URL.
-2. A shared admin password from `.env`/environment configuration. Local default:
+2. A per-instance `teacherKey`, generated when the teacher creates an instance.
+   Teacher/admin URLs include it as `teacherKey=...`.
+3. A shared admin password from `.env`/environment configuration. Local default:
    `admin`.
 
 Admin APIs accept the shared password as `adminPassword` in the JSON body, as an
 `adminPassword` query parameter, or as the `X-Admin-Password` header. The browser
 admin page prompts for it when it is not already in the URL/session.
+
+Student/status/replay APIs require the per-instance class key as `key=...`,
+`accessKey` in the JSON body, or the `X-Instance-Key` header. Teacher/admin
+actions require `teacherKey=...`, `teacherKey` in the JSON body, or the
+`X-Teacher-Key` header.
+
+The built-in public Tetris demo is the exception. The server always seeds
+`instanceCode=tetris` and `instanceName=tetris` for the bundled Tetris picture.
+Anyone can open `instructions.html?instance=tetris`, submit pixels, or retrieve
+replay rows without a class key. Teachers can reset it without a teacher key or
+admin password. The public demo cannot be deactivated or deleted, and teachers
+cannot create another instance named `tetris`.
+
+The Express server enables CORS for configured `allowed_origins` and accepts the
+custom key/password headers used by the client. It stores normal application
+data in SQLite: instances, replay rows, custom picture specs/artifacts, and
+auth-failure throttling. Repeated bad class keys, teacher keys, admin codes, or
+admin passwords from the same IP are temporarily blocked. Defaults are
+`AUTH_FAILURE_LIMIT=5`, `AUTH_FAILURE_WINDOW_MINUTES=10`, and
+`AUTH_BAN_DAYS=1`.
 
 ### Diagnostics
 
@@ -132,10 +163,15 @@ Required local `.env` values:
 ```bash
 ADMIN_PASSWORD=admin
 DOWNLOAD_TOKEN=change-me-before-deploying
+AUTH_FAILURE_LIMIT=5
+AUTH_FAILURE_WINDOW_MINUTES=10
+AUTH_BAN_DAYS=1
 ```
 
 - `ADMIN_PASSWORD` is the shared login required by teacher/admin APIs.
 - `DOWNLOAD_TOKEN` protects the full replay-data export at `/download`.
+- `AUTH_FAILURE_LIMIT`, `AUTH_FAILURE_WINDOW_MINUTES`, and `AUTH_BAN_DAYS`
+  control temporary IP bans after repeated bad keys/passwords.
 
 When the server starts, it checks for `.env` and for required keys. If the file
 or a required key is missing and the server is running in an interactive
@@ -149,7 +185,7 @@ server does not finish startup.
 
 ### List pictures
 
-The server prepopulates the database with the original CS173 Pixel Pandemonium image inventory.
+The server prepopulates the database with the bundled Pixel Pandemonium image inventory, including the public Tetris demo.
 
 ```bash
 curl http://localhost:8000/pictures \
@@ -230,15 +266,23 @@ curl -X POST http://localhost:8000/instance/create \
   }'
 ```
 
-The response includes `instanceCode`, `adminCode`, `studentUrl`, `replayUrl`, `adminUrl`, and `expiresAt`.
+The response includes `instanceCode`, `adminCode`, `accessKey`, `teacherKey`,
+`studentUrl`, `replayUrl`, `teacherUrl`, `adminUrl`, and `expiresAt`.
 Status/admin responses also include `pictureTitle`; custom pictures include
 `pictureCustom`, `pictureSpecUrl`, and `pictureZipUrl` so the static client can
 load the server-served spec.
 
+`instanceName` is optional in the create request. It must be unique when
+provided. If omitted, the server uses the generated `instanceCode` as the unique
+instance name. The name `tetris` is reserved for the built-in public demo. The
+`studentUrl` is the teacher-shareable URL for that specific
+instance and includes the class key. The `teacherUrl` and `adminUrl` include the
+separate teacher key.
+
 ### Validate an instance
 
 ```bash
-curl http://localhost:8000/instance/INSTANCE-CODE/status \
+curl "http://localhost:8000/instance/INSTANCE-CODE/status?key=CLASS-KEY" \
   -H 'Origin: http://localhost:4000'
 ```
 
@@ -248,13 +292,13 @@ curl http://localhost:8000/instance/INSTANCE-CODE/status \
 curl -X POST http://localhost:8000/instance/INSTANCE-CODE/insert \
   -H 'Origin: http://localhost:4000' \
   -H 'Content-Type: application/json' \
-  -d '{"data":"0,0,10,10,#ff0000,0,0"}'
+  -d '{"accessKey":"CLASS-KEY","data":"0,0,10,10,#ff0000,0,0"}'
 ```
 
 ### Retrieve replay data
 
 ```bash
-curl http://localhost:8000/instance/INSTANCE-CODE/retrieve \
+curl "http://localhost:8000/instance/INSTANCE-CODE/retrieve?key=CLASS-KEY" \
   -H 'Origin: http://localhost:4000'
 ```
 
@@ -264,17 +308,30 @@ curl http://localhost:8000/instance/INSTANCE-CODE/retrieve \
 curl -X POST http://localhost:8000/instance/INSTANCE-CODE/reset \
   -H 'Origin: http://localhost:4000' \
   -H 'Content-Type: application/json' \
-  -d '{"adminCode":"ADMIN-CODE","adminPassword":"admin"}'
+  -d '{"adminCode":"ADMIN-CODE","teacherKey":"TEACHER-KEY","adminPassword":"admin"}'
 ```
 
 ### Admin inspect an instance
 
 ```bash
-curl "http://localhost:8000/instance/INSTANCE-CODE/admin?admin=ADMIN-CODE&adminPassword=admin" \
+curl "http://localhost:8000/instance/INSTANCE-CODE/admin?admin=ADMIN-CODE&teacherKey=TEACHER-KEY&adminPassword=admin" \
   -H 'Origin: http://localhost:4000'
 ```
 
 Returns instance metadata plus replay rows. This is used by `admin.html`.
+
+### Rotate class or teacher keys
+
+```bash
+curl -X POST http://localhost:8000/instance/INSTANCE-CODE/rotate-key \
+  -H 'Origin: http://localhost:4000' \
+  -H 'Content-Type: application/json' \
+  -d '{"keyType":"student","adminCode":"ADMIN-CODE","teacherKey":"TEACHER-KEY","adminPassword":"admin"}'
+```
+
+Use `"keyType":"student"` to reset the class key in student/replay links. Use
+`"keyType":"teacher"` to reset the teacher/admin key. Old links containing the
+rotated key stop working.
 
 ### Update one replay row
 
@@ -282,7 +339,7 @@ Returns instance metadata plus replay rows. This is used by `admin.html`.
 curl -X POST http://localhost:8000/instance/INSTANCE-CODE/event/ROW-ID/update \
   -H 'Origin: http://localhost:4000' \
   -H 'Content-Type: application/json' \
-  -d '{"adminCode":"ADMIN-CODE","adminPassword":"admin","data":"0,0,10,10,#00ff00,0,0"}'
+  -d '{"adminCode":"ADMIN-CODE","teacherKey":"TEACHER-KEY","adminPassword":"admin","data":"0,0,10,10,#00ff00,0,0"}'
 ```
 
 ### Delete one replay row
@@ -291,7 +348,7 @@ curl -X POST http://localhost:8000/instance/INSTANCE-CODE/event/ROW-ID/update \
 curl -X POST http://localhost:8000/instance/INSTANCE-CODE/event/ROW-ID/delete \
   -H 'Origin: http://localhost:4000' \
   -H 'Content-Type: application/json' \
-  -d '{"adminCode":"ADMIN-CODE","adminPassword":"admin"}'
+  -d '{"adminCode":"ADMIN-CODE","teacherKey":"TEACHER-KEY","adminPassword":"admin"}'
 ```
 
 ### Deactivate an instance
@@ -300,7 +357,7 @@ curl -X POST http://localhost:8000/instance/INSTANCE-CODE/event/ROW-ID/delete \
 curl -X POST http://localhost:8000/instance/INSTANCE-CODE/deactivate \
   -H 'Origin: http://localhost:4000' \
   -H 'Content-Type: application/json' \
-  -d '{"adminCode":"ADMIN-CODE","adminPassword":"admin"}'
+  -d '{"adminCode":"ADMIN-CODE","teacherKey":"TEACHER-KEY","adminPassword":"admin"}'
 ```
 
 Deactivate is a soft delete. It sets `ACTIVE = 0`, preserves the instance row and replay data, and makes the instance behave as not found for student/status/replay access. The legacy `/instance/:code/delete` route is retained as an alias for deactivation.
@@ -320,16 +377,22 @@ The browser catches most typos locally, and the server still validates code form
 ## Use Cases
 
 - A teacher creates an instance for a picture and class time.
-- The server validates the selected picture against the prepopulated original CS173 image inventory.
+- The server validates the selected picture against the bundled image inventory.
 - A teacher can upload outside posterizer specs or a browser-generated image spec,
   store it as a custom picture, download generated spec files, and create an
   instance from that custom picture.
 - The teacher shares the student QR code or URL.
+- Student and replay URLs include a class key and cannot be used with only the
+  guessed instance code.
+- Teacher/admin URLs include a separate teacher key and cannot be used with only
+  the guessed instance/admin code.
 - Students submit tile pixels into that instance only.
 - The teacher opens the replay URL and watches live updates.
 - A teacher resets an instance for practice or reuse.
 - A teacher/admin edits or deletes individual replay rows from the admin page.
 - A teacher/admin deactivates an instance without deleting stored replay data.
+- A teacher/admin rotates the class key or teacher key from the admin page when
+  a link needs to be invalidated.
 - A teacher/admin generates time-lapse animations from actual instance data or from the finished product, including unfinished activities.
 - Two teachers can use the same picture at the same time without data collision.
 - Expired instances reject new writes and clear replay data during cleanup.
@@ -347,6 +410,9 @@ The harness runs unit tests first, then reads `config.yaml`, starts the server i
 it is not already running, creates static and custom instances, verifies seeded
 pictures, custom spec JS, custom spec zip downloads, isolation, reset,
 invalid-code handling, and legacy routes.
+It also verifies class-key enforcement, teacher-key enforcement, key rotation,
+unique instance-name enforcement, and temporary IP blocking after repeated bad
+auth attempts.
 
 Unit tests only:
 
@@ -374,7 +440,7 @@ output.
 
 ## Cloudflare Deployment
 
-Cloudflare Workers cannot run the Express/Faye server process directly. This repository includes a compatible Worker adapter in `src/cloudflare-worker.ts` using D1 for storage and Durable Objects for WebSocket pub/sub.
+Cloudflare Workers cannot run the Express/Faye server process directly. This repository includes a compatible Worker adapter in `src/cloudflare-worker.ts` using D1 for SQLite-compatible storage and Durable Objects for WebSocket pub/sub.
 
 1. Install dependencies:
 
