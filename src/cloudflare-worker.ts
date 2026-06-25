@@ -130,8 +130,12 @@ function luhnCheckDigit(payloadDigits: string): string {
   return String((10 - (sum % 10)) % 10);
 }
 
+function isTetrisDemoCode(code: string): boolean {
+  return String(code || "").toLowerCase() === "tetris";
+}
+
 function validateCheckDigit(code: string): boolean {
-  if (String(code || "").toLowerCase() === "tetris") return true;
+  if (isTetrisDemoCode(code)) return true;
   const digits = digitsOnly(code);
   if (digits.length < 11) return false;
   const suffix = digits.slice(-11);
@@ -170,7 +174,7 @@ function accessKey(): string {
 
 function studentUrls(env: Env, instanceCode: string, key: string) {
   const base = (env.CLIENT_BASE_URL || "").replace(/\/$/, "");
-  if (String(instanceCode || "").toLowerCase() === "tetris") {
+  if (isTetrisDemoCode(instanceCode)) {
     return {
       studentUrl: `${base}/instructions.html?instance=tetris`,
       replayUrl: `${base}/replay.html?instance=tetris`
@@ -185,7 +189,7 @@ function studentUrls(env: Env, instanceCode: string, key: string) {
 
 function urls(env: Env, instanceCode: string, admin: string, key: string, teacherKey: string) {
   const base = (env.CLIENT_BASE_URL || "").replace(/\/$/, "");
-  if (String(instanceCode || "").toLowerCase() === "tetris") {
+  if (isTetrisDemoCode(instanceCode)) {
     return {
       ...studentUrls(env, instanceCode, key),
       teacherUrl: `${base}/teacher-dashboard.html?instance=tetris`,
@@ -296,7 +300,7 @@ function teacherKeyFromRequest(request: Request, url: URL, body?: Record<string,
 }
 
 async function instanceAccessError(request: Request, env: Env, url: URL, row: any, body?: Record<string, any>): Promise<Response | null> {
-  if (row.INSTANCE_CODE === "tetris" && row.PICTURE_ID === "tetris") return null;
+  if (isTetrisDemoCode(row.INSTANCE_CODE)) return null;
   const banned = await requireNotAuthBanned(request, env, "student");
   if (banned) return banned;
   if (accessKeyFromRequest(request, url, body) === String(row.ACCESS_KEY || "")) {
@@ -307,7 +311,7 @@ async function instanceAccessError(request: Request, env: Env, url: URL, row: an
 }
 
 async function teacherAccessError(request: Request, env: Env, url: URL, row: any, body?: Record<string, any>): Promise<Response | null> {
-  if (row.INSTANCE_CODE === "tetris" && row.PICTURE_ID === "tetris") return null;
+  if (isTetrisDemoCode(row.INSTANCE_CODE)) return null;
   const banned = await requireNotAuthBanned(request, env, "teacher");
   if (banned) return banned;
   if (teacherKeyFromRequest(request, url, body) === String(row.TEACHER_KEY || "")) {
@@ -319,6 +323,7 @@ async function teacherAccessError(request: Request, env: Env, url: URL, row: any
 
 async function activeInstance(env: Env, code: string) {
   if (!validateCheckDigit(code)) return { error: "Invalid instance code", status: 400 };
+  if (isTetrisDemoCode(code)) await ensureDemoInstance(env);
   const row = await env.DB.prepare("SELECT * FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(code).first<any>();
   if (!row) return { error: "Instance not found", status: 404 };
   if (row.ACTIVE === 0) return { error: "Instance not found", status: 404 };
@@ -328,9 +333,10 @@ async function activeInstance(env: Env, code: string) {
 
 async function adminInstance(env: Env, code: string, admin: string | null, request?: Request) {
   if (!validateCheckDigit(code)) return { error: "Invalid instance code", status: 400 };
+  if (isTetrisDemoCode(code)) await ensureDemoInstance(env);
   const row = await env.DB.prepare("SELECT * FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(code).first<any>();
   if (!row || row.ACTIVE === 0) return { error: "Instance not found", status: 404 };
-  if (row.INSTANCE_CODE === "tetris" && row.PICTURE_ID === "tetris") return { row };
+  if (isTetrisDemoCode(row.INSTANCE_CODE)) return { row };
   if (request) {
     const banned = await requireNotAuthBanned(request, env, "admin");
     if (banned) return { response: banned };
@@ -354,6 +360,15 @@ async function ensurePictures(env: Env): Promise<void> {
          ENABLED = 1`
     ).bind(picture.id, picture.title, picture.script).run();
   }
+  await ensureDemoInstance(env);
+}
+
+// Seeds (or repairs) the bundled public Tetris demo instance. The demo uses the
+// reserved instance code "tetris" with empty student/teacher keys so it never
+// requires an access key. This is invoked on the student-facing read paths too
+// (not just /pictures), so a freshly migrated or stale database self-heals and
+// the demo stays keyless for both students and teachers.
+async function ensureDemoInstance(env: Env): Promise<void> {
   await env.DB.prepare("UPDATE INSTANCES SET INSTANCE_NAME = INSTANCE_CODE WHERE LOWER(INSTANCE_NAME) = 'tetris' AND INSTANCE_CODE <> 'tetris'").run();
   await env.DB.prepare(
     `INSERT INTO INSTANCES

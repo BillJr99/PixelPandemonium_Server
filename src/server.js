@@ -238,7 +238,11 @@ function isTetrisDemoCode(code) {
 }
 
 function isTetrisDemo(row) {
-  return row && row.INSTANCE_CODE === "tetris" && row.PICTURE_ID === "tetris";
+  // "tetris" is a reserved instance code that can never be assigned to a real
+  // class (it is rejected at creation and cannot be generated), so the code
+  // alone identifies the public demo. Do not also require PICTURE_ID === "tetris":
+  // a stale/drifted demo row would otherwise start demanding an access key.
+  return !!row && isTetrisDemoCode(row.INSTANCE_CODE);
 }
 
 function publicInstance(row) {
