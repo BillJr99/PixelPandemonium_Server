@@ -615,6 +615,16 @@ output.
 
 Cloudflare Workers cannot run the Express/Faye server process directly. This repository includes a compatible Worker adapter in `src/cloudflare-worker.ts` using D1 for SQLite-compatible storage and Durable Objects for WebSocket pub/sub.
 
+### Prerequisites
+
+Before deploying to Cloudflare, you must have:
+
+1. A **Cloudflare account**: Sign up at https://dash.cloudflare.com/sign-up if you don't already have one. A free account is sufficient for testing and modest classroom usage.
+2. A **Cloudflare Workers account**: Cloudflare Workers are included with all Cloudflare plans. Workers are available on the free tier, but you will need to verify your account and enable Workers when prompted.
+3. **Wrangler CLI**: The Cloudflare command-line tool will be installed via `npm install` in the steps below.
+
+### Deployment Steps
+
 1. Install dependencies:
 
 ```bash
