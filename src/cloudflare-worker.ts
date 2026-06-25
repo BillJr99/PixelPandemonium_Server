@@ -1,3 +1,5 @@
+import { APP_VERSION } from "./version";
+
 export interface Env {
   DB: D1Database;
   PUBSUB: DurableObjectNamespace<PubSubRoom>;
@@ -466,7 +468,7 @@ export default {
     }
 
     if (url.pathname === "/health") {
-      return json(request, env, { status: "ok", runtime: "cloudflare-worker", routes: ["/instance/create", "/instance/:code/status", "/instance/:code/insert", "/instance/:code/retrieve", "/instance/:code/reset", "/faye"] });
+      return json(request, env, { status: "ok", version: APP_VERSION, runtime: "cloudflare-worker", routes: ["/instance/create", "/instance/:code/status", "/instance/:code/insert", "/instance/:code/retrieve", "/instance/:code/reset", "/faye"] });
     }
 
     if (url.pathname === "/pictures" && request.method === "GET") {
