@@ -982,6 +982,47 @@ function fayeMessageRateLimited(ip) {
   return bucket.count > FAYE_MAX_MESSAGES_PER_SECOND;
 }
 
+// Realtime channel authorization. A channel "/faye/messages/<code>" may only be
+// subscribed to or published on by a client presenting that instance's class
+// access key or teacher key (the Tetris demo is exempt). Instance keys are
+// cached briefly so this does not hit the database on every realtime message.
+const realtimeKeyCache = new Map();
+
+function realtimeChannelInstanceCode(channel) {
+  const match = String(channel || "").match(/^\/faye\/messages\/(.+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function realtimeKeyOk(code, key) {
+  if (!code) return false;
+  if (isTetrisDemoCode(code)) return true;
+  const now = Date.now();
+  let entry = realtimeKeyCache.get(code);
+  if (!entry || entry.exp <= now) {
+    const db = openDb();
+    try {
+      const row = await getInstance(db, code);
+      entry = row
+        ? { found: true, accessKey: String(row.ACCESS_KEY || ""), teacherKey: String(row.TEACHER_KEY || ""), exp: now + 30000 }
+        : { found: false, exp: now + 5000 };
+    } finally {
+      db.close();
+    }
+    realtimeKeyCache.set(code, entry);
+  }
+  if (!entry.found) return false;
+  const provided = String(key || "");
+  return provided !== "" && (provided === entry.accessKey || provided === entry.teacherKey);
+}
+
+// Returns the channel a message needs authorization for (subscribe target or a
+// publish channel), or null for protocol/meta messages that need no key.
+function realtimeAuthChannel(message) {
+  if (message.channel === "/meta/subscribe") return message.subscription || null;
+  if (typeof message.channel === "string" && message.channel.indexOf("/faye/messages/") === 0) return message.channel;
+  return null;
+}
+
 const server = http.createServer(app);
 const bayeux = new faye.NodeAdapter({ mount: "/faye" });
 bayeux.addExtension({
@@ -1009,7 +1050,16 @@ bayeux.addExtension({
       message.error = "Too many realtime messages. Please slow down.";
       return callback(message);
     }
-    callback(message);
+    const authChannel = realtimeAuthChannel(message);
+    if (!authChannel) return callback(message);
+    const key = message.ext && message.ext.key;
+    realtimeKeyOk(realtimeChannelInstanceCode(authChannel), key).then((ok) => {
+      if (!ok) message.error = "Invalid realtime channel key";
+      callback(message);
+    }).catch(() => {
+      message.error = "Realtime authorization error";
+      callback(message);
+    });
   }
 });
 bayeux.attach(server);

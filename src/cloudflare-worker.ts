@@ -142,6 +142,13 @@ function isTetrisDemoCode(code: string): boolean {
   return String(code || "").toLowerCase() === "tetris";
 }
 
+// Realtime channels are "/faye/messages/<instanceCode>"; returns the instance
+// code so the channel can be authorized with that instance's access key.
+function realtimeChannelInstanceCode(channel: string): string | null {
+  const match = String(channel || "").match(/^\/faye\/messages\/(.+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 function validateCheckDigit(code: string): boolean {
   if (isTetrisDemoCode(code)) return true;
   const digits = digitsOnly(code);
@@ -733,6 +740,17 @@ export default {
     }
 
     if (url.pathname === "/faye") {
+      const channelCode = realtimeChannelInstanceCode(url.searchParams.get("channel") || "");
+      if (channelCode && !isTetrisDemoCode(channelCode)) {
+        const banned = await requireNotAuthBanned(request, env, "student");
+        if (banned) return banned;
+        const row = await env.DB.prepare("SELECT ACCESS_KEY, TEACHER_KEY FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(channelCode).first<any>();
+        const provided = accessKeyFromRequest(request, url);
+        if (!row || (provided !== String(row.ACCESS_KEY || "") && provided !== String(row.TEACHER_KEY || ""))) {
+          return authError(request, env, "student", "realtime-channel-key", "Invalid realtime channel key");
+        }
+        await clearAuthFailures(request, env, "student");
+      }
       const id = env.PUBSUB.idFromName("default-room");
       return env.PUBSUB.get(id).fetch(request);
     }
@@ -789,7 +807,10 @@ export class PubSubRoom implements DurableObject {
       ws.send(JSON.stringify({ type: "error", error: "Invalid message." }));
       return;
     }
-    const channel = parsed.channel || ownChannel;
+    // Always broadcast on the channel this connection was authorized for at
+    // upgrade time; ignore any channel a client puts in the message body so it
+    // cannot publish into another instance's channel.
+    const channel = ownChannel;
     const payload = JSON.stringify({ channel, data: parsed.data ?? parsed, timestamp: new Date().toISOString() });
     for (const client of this.state.getWebSockets()) {
       const target = client.deserializeAttachment() as ClientAttachment | undefined;

@@ -262,6 +262,20 @@ with a 64&nbsp;KB max message size. On the Worker this cap lives in the
 extension. The reserved `tetris` demo is exempt from key checks (but not from
 rate limiting).
 
+Realtime channels are also access-key authorized, so the realtime transport is
+not a way around the class key. A channel is `/faye/messages/<instanceCode>`, and
+subscribing to or publishing on it requires that instance's class access key (or
+teacher key); the client sends it as `&key=...` on the WebSocket URL and as
+`ext.key` on Faye messages. The Worker validates the key at the WebSocket upgrade
+and pins each connection to its authorized channel; the Node server validates it
+per subscribe/publish in the Faye extension (with a short-lived key cache). An
+invalid key is rejected (HTTP `403` on the Worker upgrade, a subscribe/publish
+error on Faye), and the `tetris` demo channel is exempt.
+
+Because the client now sends the realtime key, deploy the client before (or with)
+the server: an older cached client that omits the key will be denied realtime and
+fall back to HTTP persistence with live updates only on reload.
+
 The Cloudflare Worker now supports the same global teacher portal as the Node
 server (`/teacher/validate`, `/teacher/instances`, `/teacher-keys`), backed by a
 `TEACHER_KEYS` table and a `DEFAULT_TEACHER_KEY` Worker secret, and it requires
