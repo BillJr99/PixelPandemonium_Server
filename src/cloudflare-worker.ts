@@ -9,6 +9,7 @@ export interface Env {
   RATE_LIMIT_MAX_PER_MINUTE: string;
   RATE_LIMIT_MAX_PER_DAY: string;
   ADMIN_PASSWORD: string;
+  DEFAULT_TEACHER_KEY: string;
   DOWNLOAD_TOKEN: string;
   LEGACY_ROUTES_ENABLED: string;
   AUTH_FAILURE_LIMIT: string;
@@ -20,7 +21,14 @@ export interface Env {
 
 interface ClientAttachment {
   channel: string;
+  windowStart?: number;
+  count?: number;
 }
+
+// Per-connection realtime guards. The WebSocket upgrade itself is already IP
+// rate limited like every other request; these bound abuse over an open socket.
+const WS_MAX_MESSAGE_BYTES = 64 * 1024;
+const WS_MAX_MESSAGES_PER_SECOND = 50;
 
 interface RateLimitState {
   secondBucket: number;
@@ -321,6 +329,59 @@ async function teacherAccessError(request: Request, env: Env, url: URL, row: any
   return authError(request, env, "teacher", "teacher-key", "Invalid teacher key");
 }
 
+function teacherAccessKeyFromRequest(request: Request, url: URL, body?: Record<string, any>): string {
+  return request.headers.get("x-teacher-access-key") || body?.teacherAccessKey || url.searchParams.get("teacherAccessKey") || "";
+}
+
+async function teacherKeyExists(env: Env, teacherKey: string): Promise<boolean> {
+  const key = String(teacherKey || "").trim();
+  if (!key) return false;
+  const row = await env.DB.prepare("SELECT ID FROM TEACHER_KEYS WHERE TEACHER_KEY = ?").bind(key).first();
+  return !!row;
+}
+
+async function ensureTeacherKey(env: Env, teacherKey: string, label = "Default Teacher"): Promise<void> {
+  const key = String(teacherKey || "").trim();
+  if (!key) return;
+  await env.DB.prepare(
+    `INSERT INTO TEACHER_KEYS (TEACHER_KEY, LABEL)
+     VALUES (?, ?)
+     ON CONFLICT(TEACHER_KEY) DO UPDATE SET LABEL = COALESCE(TEACHER_KEYS.LABEL, excluded.LABEL)`
+  ).bind(key, label).run();
+}
+
+async function ensureDefaultTeacherKey(env: Env): Promise<void> {
+  if (env.DEFAULT_TEACHER_KEY) await ensureTeacherKey(env, env.DEFAULT_TEACHER_KEY, "Default Teacher");
+}
+
+// Validates a global teacher-portal key. Returns the validated key, or an error
+// Response (with the teacher IP-ban + auth-failure accounting applied).
+async function teacherPortalAccess(request: Request, env: Env, url: URL, body?: Record<string, any>): Promise<{ response?: Response; teacherAccessKey?: string }> {
+  const banned = await requireNotAuthBanned(request, env, "teacher");
+  if (banned) return { response: banned };
+  await ensureDefaultTeacherKey(env);
+  const teacherAccessKey = teacherAccessKeyFromRequest(request, url, body);
+  if (await teacherKeyExists(env, teacherAccessKey)) {
+    await clearAuthFailures(request, env, "teacher");
+    return { teacherAccessKey };
+  }
+  return { response: await authError(request, env, "teacher", "teacher-access-key", "Invalid teacher access key") };
+}
+
+// Authorizes a teacher-portal action by either the admin password or a valid
+// global teacher key (the public Tetris demo needs neither).
+async function adminOrTeacherPortalAccess(request: Request, env: Env, url: URL, body: Record<string, any> | undefined, code?: string): Promise<{ response?: Response; mode?: "demo" | "admin" | "teacher"; teacherAccessKey?: string }> {
+  if (code && isTetrisDemoCode(code)) return { mode: "demo", teacherAccessKey: "" };
+  if (adminPasswordFromRequest(request, url, body)) {
+    const passwordError = await adminPasswordError(request, env, url, body);
+    if (passwordError) return { response: passwordError };
+    return { mode: "admin", teacherAccessKey: "" };
+  }
+  const portal = await teacherPortalAccess(request, env, url, body);
+  if (portal.response) return { response: portal.response };
+  return { mode: "teacher", teacherAccessKey: portal.teacherAccessKey };
+}
+
 async function activeInstance(env: Env, code: string) {
   if (!validateCheckDigit(code)) return { error: "Invalid instance code", status: 400 };
   if (isTetrisDemoCode(code)) await ensureDemoInstance(env);
@@ -361,6 +422,7 @@ async function ensurePictures(env: Env): Promise<void> {
     ).bind(picture.id, picture.title, picture.script).run();
   }
   await ensureDemoInstance(env);
+  await ensureDefaultTeacherKey(env);
 }
 
 // Seeds (or repairs) the bundled public Tetris demo instance. The demo uses the
@@ -436,9 +498,70 @@ export default {
       return json(request, env, { instances });
     }
 
+    if (url.pathname === "/teacher/validate" && request.method === "GET") {
+      await ensurePictures(env);
+      const portal = await teacherPortalAccess(request, env, url);
+      if (portal.response) return portal.response;
+      return json(request, env, { valid: true });
+    }
+
+    if (url.pathname === "/teacher/instances" && request.method === "GET") {
+      await ensurePictures(env);
+      const portal = await teacherPortalAccess(request, env, url);
+      if (portal.response) return portal.response;
+      const result = await env.DB.prepare(
+        `SELECT i.*, p.TITLE as PICTURE_TITLE, p.SCRIPT as PICTURE_SCRIPT, p.CUSTOM as PICTURE_CUSTOM
+         FROM INSTANCES i
+         LEFT JOIN PICTURES p ON p.ID = i.PICTURE_ID
+         WHERE i.ACTIVE = 1 AND i.TEACHER_ACCESS_KEY = ?
+         ORDER BY i.CREATED_AT DESC, i.ID DESC`
+      ).bind(portal.teacherAccessKey).all<any>();
+      const instances = (result.results || []).map((row: any) => ({
+        instanceCode: row.INSTANCE_CODE,
+        instanceName: row.INSTANCE_NAME || row.INSTANCE_CODE,
+        pictureId: row.PICTURE_ID,
+        teacherName: row.TEACHER_NAME,
+        requestedDateTime: row.REQUESTED_DATETIME,
+        createdAt: row.CREATED_AT,
+        expiresAt: row.EXPIRES_AT,
+        pictureTitle: row.PICTURE_TITLE,
+        pictureScript: row.PICTURE_SCRIPT,
+        pictureCustom: !!row.PICTURE_CUSTOM,
+        adminCode: row.ADMIN_CODE,
+        accessKey: row.ACCESS_KEY,
+        teacherKey: row.TEACHER_KEY,
+        ...urls(env, row.INSTANCE_CODE, row.ADMIN_CODE, row.ACCESS_KEY, row.TEACHER_KEY)
+      }));
+      return json(request, env, { instances });
+    }
+
+    if (url.pathname === "/teacher-keys" && request.method === "GET") {
+      await ensurePictures(env);
+      const passwordError = await adminPasswordError(request, env, url);
+      if (passwordError) return passwordError;
+      const result = await env.DB.prepare("SELECT ID as id, TEACHER_KEY as teacherKey, LABEL as label, CREATED_AT as createdAt FROM TEACHER_KEYS ORDER BY CREATED_AT ASC, ID ASC").all();
+      return json(request, env, { teacherKeys: result.results || [] });
+    }
+
+    if (url.pathname === "/teacher-keys" && request.method === "POST") {
+      await ensurePictures(env);
+      const body = await readRequestBody(request);
+      const passwordError = await adminPasswordError(request, env, url, body);
+      if (passwordError) return passwordError;
+      const key = String(body.teacherKey || "").trim();
+      if (!key) return json(request, env, { error: "teacherKey is required" }, { status: 400 });
+      const existing = await env.DB.prepare("SELECT ID FROM TEACHER_KEYS WHERE TEACHER_KEY = ?").bind(key).first();
+      if (existing) return json(request, env, { error: "Teacher key already exists" }, { status: 409 });
+      await env.DB.prepare("INSERT INTO TEACHER_KEYS (TEACHER_KEY, LABEL) VALUES (?, ?)").bind(key, String(body.label || "").trim()).run();
+      const created = await env.DB.prepare("SELECT ID as id, TEACHER_KEY as teacherKey, LABEL as label, CREATED_AT as createdAt FROM TEACHER_KEYS WHERE TEACHER_KEY = ?").bind(key).first();
+      return json(request, env, created, { status: 201 });
+    }
+
     if (url.pathname === "/instance/create" && request.method === "POST") {
       await ensurePictures(env);
       const body = await readRequestBody(request);
+      const access = await adminOrTeacherPortalAccess(request, env, url, body);
+      if (access.response) return access.response;
       if (!body.pictureId || !body.teacherName || !body.dateTime) {
         return json(request, env, { error: "Missing: pictureId, teacherName, dateTime" }, { status: 400 });
       }
@@ -452,11 +575,12 @@ export default {
       const admin = adminCode();
       const key = accessKey();
       const teacherKey = accessKey();
+      const teacherAccessKey = access.mode === "teacher" ? (access.teacherAccessKey || null) : null;
       const hours = Number(body.expirationHours || env.DEFAULT_EXPIRATION_HOURS || 8760);
       const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
       await env.DB.prepare(
-        "INSERT INTO INSTANCES (INSTANCE_CODE, ADMIN_CODE, INSTANCE_NAME, ACCESS_KEY, TEACHER_KEY, PICTURE_ID, TEACHER_NAME, REQUESTED_DATETIME, EXPIRES_AT) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).bind(code, admin, instanceName, key, teacherKey, body.pictureId, body.teacherName, body.dateTime, expiresAt).run();
+        "INSERT INTO INSTANCES (INSTANCE_CODE, ADMIN_CODE, INSTANCE_NAME, ACCESS_KEY, TEACHER_KEY, TEACHER_ACCESS_KEY, PICTURE_ID, TEACHER_NAME, REQUESTED_DATETIME, EXPIRES_AT) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).bind(code, admin, instanceName, key, teacherKey, teacherAccessKey, body.pictureId, body.teacherName, body.dateTime, expiresAt).run();
       return json(request, env, { instanceCode: code, adminCode: admin, accessKey: key, teacherKey, instanceName, pictureId: body.pictureId, teacherName: body.teacherName, requestedDateTime: body.dateTime, expiresAt, ...urls(env, code, admin, key, teacherKey) }, { status: 201 });
     }
 
@@ -637,8 +761,35 @@ export class PubSubRoom implements DurableObject {
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const text = typeof message === "string" ? message : new TextDecoder().decode(message);
     const source = ws.deserializeAttachment() as ClientAttachment | undefined;
-    const parsed = JSON.parse(text);
-    const channel = parsed.channel || source?.channel || "/default";
+    const ownChannel = source?.channel || "/default";
+
+    if (text.length > WS_MAX_MESSAGE_BYTES) {
+      ws.send(JSON.stringify({ type: "error", error: "Message too large." }));
+      return;
+    }
+
+    // Per-connection message rate limit (fixed one-second window).
+    const now = Date.now();
+    const windowStart = source?.windowStart || 0;
+    if (now - windowStart >= 1000) {
+      ws.serializeAttachment({ channel: ownChannel, windowStart: now, count: 1 } satisfies ClientAttachment);
+    } else {
+      const count = (source?.count || 0) + 1;
+      ws.serializeAttachment({ channel: ownChannel, windowStart, count } satisfies ClientAttachment);
+      if (count > WS_MAX_MESSAGES_PER_SECOND) {
+        ws.send(JSON.stringify({ type: "error", error: "Too many messages. Please slow down." }));
+        return;
+      }
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      ws.send(JSON.stringify({ type: "error", error: "Invalid message." }));
+      return;
+    }
+    const channel = parsed.channel || ownChannel;
     const payload = JSON.stringify({ channel, data: parsed.data ?? parsed, timestamp: new Date().toISOString() });
     for (const client of this.state.getWebSockets()) {
       const target = client.deserializeAttachment() as ClientAttachment | undefined;

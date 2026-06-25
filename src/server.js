@@ -947,15 +947,67 @@ app.use((err, req, res, next) => {
   errorResponse(req, res, err);
 });
 
+// Realtime (Faye) protection. Faye attaches to the raw HTTP server and bypasses
+// the Express IP rate-limit middleware, so we guard it here instead. Every Faye
+// message (handshake/connect/subscribe/publish) over BOTH transports (long-poll
+// and WebSocket) flows through the incoming extension, so this is the single
+// place that covers all realtime traffic. We use a generous per-IP per-second
+// cap (matching the Worker's per-connection WebSocket cap) so active drawing is
+// not throttled, plus a max message size.
+const FAYE_MAX_MESSAGES_PER_SECOND = 50;
+const FAYE_MAX_MESSAGE_BYTES = 64 * 1024;
+const fayeRateState = new Map();
+
+function fayeClientIp(request) {
+  if (!request) return "unknown";
+  const xff = request.headers && request.headers["x-forwarded-for"];
+  const remote = request.socket && request.socket.remoteAddress;
+  return String(xff || remote || "unknown").split(",")[0].trim();
+}
+
+function fayeMessageRateLimited(ip) {
+  const win = Math.floor(Date.now() / 1000);
+  const bucket = fayeRateState.get(ip) || { win, count: 0 };
+  if (bucket.win !== win) {
+    bucket.win = win;
+    bucket.count = 0;
+  }
+  bucket.count += 1;
+  fayeRateState.set(ip, bucket);
+  if (fayeRateState.size > 10000) {
+    for (const [key, value] of fayeRateState) {
+      if (value.win !== win) fayeRateState.delete(key);
+    }
+  }
+  return bucket.count > FAYE_MAX_MESSAGES_PER_SECOND;
+}
+
 const server = http.createServer(app);
 const bayeux = new faye.NodeAdapter({ mount: "/faye" });
 bayeux.addExtension({
-  incoming(message, callback) {
+  incoming(message, request, callback) {
     if (message.channel === "/meta/handshake") {
       const origin = message.ext && message.ext.origin;
       if (origin && !originAllowed(origin)) {
         message.error = "Forbidden: Invalid origin";
+        return callback(message);
       }
+    }
+    if (message.data !== undefined) {
+      let size = 0;
+      try {
+        size = JSON.stringify(message.data).length;
+      } catch (err) {
+        size = 0;
+      }
+      if (size > FAYE_MAX_MESSAGE_BYTES) {
+        message.error = "Message too large.";
+        return callback(message);
+      }
+    }
+    if (fayeMessageRateLimited(fayeClientIp(request))) {
+      message.error = "Too many realtime messages. Please slow down.";
+      return callback(message);
     }
     callback(message);
   }
