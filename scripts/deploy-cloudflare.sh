@@ -323,6 +323,18 @@ if [ -z "$client_base_url" ] || [ -z "$allowed_origins" ]; then
 fi
 
 database_id="$current_database_id"
+# If wrangler.jsonc has a real database id but the database no longer exists in
+# Cloudflare (e.g. it was deleted), clear the id so the creation flow below
+# handles it instead of failing at migration time with error 7404.
+if [ -n "$database_id" ] && [ "$database_id" != "REPLACE_WITH_D1_DATABASE_ID" ] \
+    && ! database_exists "$current_database_name"; then
+  echo
+  echo "Warning: $WRANGLER_CONFIG has database id '$database_id'" >&2
+  echo "but database '$current_database_name' was not found in your Cloudflare account." >&2
+  echo "The database may have been deleted. A new one will be created." >&2
+  database_id=""
+fi
+
 if [ -z "$database_id" ] || [ "$database_id" = "REPLACE_WITH_D1_DATABASE_ID" ]; then
   echo
   echo "$WRANGLER_CONFIG does not have a D1 database id."
