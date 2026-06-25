@@ -46,10 +46,19 @@ deployment:
 ./scripts/deploy-cloudflare.sh
 ```
 
-The script checks dependencies, runs `wrangler login`, prompts for the public
-client URL and allowed browser origins, creates or configures the D1 database,
-sets `ADMIN_PASSWORD` and `DOWNLOAD_TOKEN` as Cloudflare Worker secrets, applies
-remote D1 migrations, and runs `wrangler deploy`.
+The script checks dependencies, runs `wrangler login`, detects whether the
+Worker and D1 database already exist and (on re-deploy) offers to destroy and
+recreate each, prompts for the public client URL and allowed browser origins,
+creates or configures the D1 database, sets `ADMIN_PASSWORD`,
+`DEFAULT_TEACHER_KEY` and `DOWNLOAD_TOKEN` as Cloudflare Worker secrets, applies
+remote D1 migrations, and runs `wrangler deploy`. When it finishes it prints the
+Worker URL and the resolved environment values, including the secret values you
+entered during that run, so run it somewhere private.
+
+Re-running the script is safe and is the normal way to ship an update: it reuses
+the existing D1 database (your class data is preserved) unless you explicitly
+choose to destroy and recreate it, and `wrangler deploy` overwrites the Worker
+in place.
 
 To remove the Cloudflare resources named in `wrangler.jsonc`, run:
 
@@ -163,7 +172,21 @@ store for the deployed Worker.
 
 ## Local Run
 
-Terminal 1:
+The guided local script prompts for the default admin password, global teacher
+key, download token, and the rate-limit / auth-ban protection settings, writes
+them to `.env` (which is gitignored), prints a summary, and starts the server:
+
+```bash
+./scripts/deploy-local.sh
+```
+
+Pass `--no-start` to only (re)write `.env` without launching the server. The
+same protections as the Cloudflare Worker apply locally: per-IP request rate
+limiting, temporary auth banning on repeated credential failures, and realtime
+(Faye) per-IP message rate limiting.
+
+You can still start the server directly once `.env` exists (or let the server
+prompt you for any missing required values on first run in a terminal):
 
 ```bash
 npm start
@@ -225,6 +248,39 @@ admin passwords from the same IP are temporarily blocked. Defaults are
 `AUTH_ADMIN_BAN_DAYS=1`, `AUTH_TEACHER_BAN_MINUTES=10`, and
 `AUTH_STUDENT_BAN_MINUTES=10`.
 
+### Protection coverage
+
+Per-IP request rate limiting (`RATE_LIMIT_MAX_PER_SECOND` / `_MINUTE` / `_DAY`)
+applies to every HTTP endpoint on both the Node server and the Cloudflare Worker
+(CORS preflight `OPTIONS` requests are exempt). Temporary auth banning applies on
+every credential check (admin password, student class key, teacher key, admin
+code); endpoints with no credential are still rate limited. The realtime
+transport is also protected: the connection/upgrade is rate limited like any
+request, and each connection/IP is capped at 50 realtime messages per second
+with a 64&nbsp;KB max message size. On the Worker this cap lives in the
+`PubSubRoom` Durable Object; on the Node server it lives in the Faye `incoming`
+extension. The reserved `tetris` demo is exempt from key checks (but not from
+rate limiting).
+
+Realtime channels are also access-key authorized, so the realtime transport is
+not a way around the class key. A channel is `/faye/messages/<instanceCode>`, and
+subscribing to or publishing on it requires that instance's class access key (or
+teacher key); the client sends it as `&key=...` on the WebSocket URL and as
+`ext.key` on Faye messages. The Worker validates the key at the WebSocket upgrade
+and pins each connection to its authorized channel; the Node server validates it
+per subscribe/publish in the Faye extension (with a short-lived key cache). An
+invalid key is rejected (HTTP `403` on the Worker upgrade, a subscribe/publish
+error on Faye), and the `tetris` demo channel is exempt.
+
+Because the client now sends the realtime key, deploy the client before (or with)
+the server: an older cached client that omits the key will be denied realtime and
+fall back to HTTP persistence with live updates only on reload.
+
+The Cloudflare Worker now supports the same global teacher portal as the Node
+server (`/teacher/validate`, `/teacher/instances`, `/teacher-keys`), backed by a
+`TEACHER_KEYS` table and a `DEFAULT_TEACHER_KEY` Worker secret, and it requires
+an admin password or a valid global teacher key to create instances.
+
 ### Diagnostics
 
 The server logs structured JSON lines to stdout/stderr. Each HTTP request gets a
@@ -255,7 +311,10 @@ Terminal 2 can run the test harness:
 ## Server `.env` Startup Setup
 
 The `.env` file exists only on the server. The static client never stores,
-creates, reads, or modifies a client-side `.env`.
+creates, reads, or modifies a client-side `.env`. The easiest way to create it
+is `./scripts/deploy-local.sh`, which prompts for these values (with the current
+ones as defaults) and writes the file for you; the keys below document what it
+writes.
 
 Required local `.env` values:
 

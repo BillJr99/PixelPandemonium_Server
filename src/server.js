@@ -238,7 +238,11 @@ function isTetrisDemoCode(code) {
 }
 
 function isTetrisDemo(row) {
-  return row && row.INSTANCE_CODE === "tetris" && row.PICTURE_ID === "tetris";
+  // "tetris" is a reserved instance code that can never be assigned to a real
+  // class (it is rejected at creation and cannot be generated), so the code
+  // alone identifies the public demo. Do not also require PICTURE_ID === "tetris":
+  // a stale/drifted demo row would otherwise start demanding an access key.
+  return !!row && isTetrisDemoCode(row.INSTANCE_CODE);
 }
 
 function publicInstance(row) {
@@ -943,17 +947,119 @@ app.use((err, req, res, next) => {
   errorResponse(req, res, err);
 });
 
+// Realtime (Faye) protection. Faye attaches to the raw HTTP server and bypasses
+// the Express IP rate-limit middleware, so we guard it here instead. Every Faye
+// message (handshake/connect/subscribe/publish) over BOTH transports (long-poll
+// and WebSocket) flows through the incoming extension, so this is the single
+// place that covers all realtime traffic. We use a generous per-IP per-second
+// cap (matching the Worker's per-connection WebSocket cap) so active drawing is
+// not throttled, plus a max message size.
+const FAYE_MAX_MESSAGES_PER_SECOND = 50;
+const FAYE_MAX_MESSAGE_BYTES = 64 * 1024;
+const fayeRateState = new Map();
+
+function fayeClientIp(request) {
+  if (!request) return "unknown";
+  const xff = request.headers && request.headers["x-forwarded-for"];
+  const remote = request.socket && request.socket.remoteAddress;
+  return String(xff || remote || "unknown").split(",")[0].trim();
+}
+
+function fayeMessageRateLimited(ip) {
+  const win = Math.floor(Date.now() / 1000);
+  const bucket = fayeRateState.get(ip) || { win, count: 0 };
+  if (bucket.win !== win) {
+    bucket.win = win;
+    bucket.count = 0;
+  }
+  bucket.count += 1;
+  fayeRateState.set(ip, bucket);
+  if (fayeRateState.size > 10000) {
+    for (const [key, value] of fayeRateState) {
+      if (value.win !== win) fayeRateState.delete(key);
+    }
+  }
+  return bucket.count > FAYE_MAX_MESSAGES_PER_SECOND;
+}
+
+// Realtime channel authorization. A channel "/faye/messages/<code>" may only be
+// subscribed to or published on by a client presenting that instance's class
+// access key or teacher key (the Tetris demo is exempt). Instance keys are
+// cached briefly so this does not hit the database on every realtime message.
+const realtimeKeyCache = new Map();
+
+function realtimeChannelInstanceCode(channel) {
+  const match = String(channel || "").match(/^\/faye\/messages\/(.+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function realtimeKeyOk(code, key) {
+  if (!code) return false;
+  if (isTetrisDemoCode(code)) return true;
+  const now = Date.now();
+  let entry = realtimeKeyCache.get(code);
+  if (!entry || entry.exp <= now) {
+    const db = openDb();
+    try {
+      const row = await getInstance(db, code);
+      entry = row
+        ? { found: true, accessKey: String(row.ACCESS_KEY || ""), teacherKey: String(row.TEACHER_KEY || ""), exp: now + 30000 }
+        : { found: false, exp: now + 5000 };
+    } finally {
+      db.close();
+    }
+    realtimeKeyCache.set(code, entry);
+  }
+  if (!entry.found) return false;
+  const provided = String(key || "");
+  return provided !== "" && (provided === entry.accessKey || provided === entry.teacherKey);
+}
+
+// Returns the channel a message needs authorization for (subscribe target or a
+// publish channel), or null for protocol/meta messages that need no key.
+function realtimeAuthChannel(message) {
+  if (message.channel === "/meta/subscribe") return message.subscription || null;
+  if (typeof message.channel === "string" && message.channel.indexOf("/faye/messages/") === 0) return message.channel;
+  return null;
+}
+
 const server = http.createServer(app);
 const bayeux = new faye.NodeAdapter({ mount: "/faye" });
 bayeux.addExtension({
-  incoming(message, callback) {
+  incoming(message, request, callback) {
     if (message.channel === "/meta/handshake") {
       const origin = message.ext && message.ext.origin;
       if (origin && !originAllowed(origin)) {
         message.error = "Forbidden: Invalid origin";
+        return callback(message);
       }
     }
-    callback(message);
+    if (message.data !== undefined) {
+      let size = 0;
+      try {
+        size = JSON.stringify(message.data).length;
+      } catch (err) {
+        size = 0;
+      }
+      if (size > FAYE_MAX_MESSAGE_BYTES) {
+        message.error = "Message too large.";
+        return callback(message);
+      }
+    }
+    if (fayeMessageRateLimited(fayeClientIp(request))) {
+      message.error = "Too many realtime messages. Please slow down.";
+      return callback(message);
+    }
+    const authChannel = realtimeAuthChannel(message);
+    if (!authChannel) return callback(message);
+    const key = message.ext && message.ext.key;
+    realtimeKeyOk(realtimeChannelInstanceCode(authChannel), key).then((ok) => {
+      if (!ok) message.error = "Invalid realtime channel key";
+      callback(message);
+    }).catch(() => {
+      message.error = "Realtime authorization error";
+      callback(message);
+    });
   }
 });
 bayeux.attach(server);
