@@ -242,7 +242,10 @@ fi
 current_worker_name="$(json_value 'config.name')"
 current_client_base_url="$(json_value 'config.vars && config.vars.CLIENT_BASE_URL')"
 current_allowed_origins="$(json_value 'config.vars && config.vars.ALLOWED_ORIGINS')"
-current_database_name="$(json_value '(config.d1_databases && config.d1_databases[0] && config.d1_databases[0].database_name) || \"pixel-pandemonium\"')"
+current_database_name="$(json_value 'config.d1_databases && config.d1_databases[0] && config.d1_databases[0].database_name')"
+if [ -z "$current_database_name" ]; then
+  current_database_name="pixel-pandemonium"
+fi
 current_database_id="$(json_value 'config.d1_databases && config.d1_databases[0] && config.d1_databases[0].database_id')"
 
 if [ "$DESTROY" -eq 1 ]; then
