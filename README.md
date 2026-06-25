@@ -198,6 +198,13 @@ The default server is `http://localhost:8000`. Check:
 curl http://localhost:8000/health
 ```
 
+`/health` returns a `version` field (the value of `APP_VERSION` in
+`src/version.js`) alongside `status`, `runtime`, and the route list. Both
+runtimes report the same version, so after a deploy you can confirm the live
+build by checking that `version` matches the value you pushed — for example
+`curl https://YOUR-WORKER.workers.dev/health`. Bump `APP_VERSION` on every
+deploy.
+
 Realtime Faye is mounted at `/faye`.
 
 ## Admin Access

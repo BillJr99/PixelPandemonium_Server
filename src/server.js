@@ -8,6 +8,7 @@ const cors = require("cors");
 const faye = require("faye");
 const sqlite3 = require("sqlite3").verbose();
 const { loadConfig } = require("./config");
+const { APP_VERSION } = require("./version");
 const {
   migrate,
   createInstance,
@@ -529,6 +530,7 @@ app.use(ipRateLimit(24 * 60 * 60 * 1000, config.rate_limit_max_per_day || 10000,
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
+    version: APP_VERSION,
     runtime: "node-express-faye",
     routes: [
       "/instance/create",
