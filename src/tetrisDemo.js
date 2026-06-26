@@ -56,7 +56,7 @@ function expectedTetrisColor(spec, xSquare, ySquare) {
 // acceptable. Consults no key — the demo is public; correctness is the only gate.
 function tetrisInsertError(spec, data) {
   const parsed = parseTetrisData(data);
-  if (!parsed) return "Invalid data format: expected row,col,w,h,#rrggbb,pageRow,pageCol";
+  if (!parsed) return "Invalid data format: expected x,y,w,h,#rrggbb,xSquare,ySquare";
   const expected = expectedTetrisColor(spec, parsed.xSquare, parsed.ySquare);
   if (expected !== null && parsed.colorHex !== expected) {
     return "Color does not match the expected color for that tile";

@@ -120,7 +120,7 @@ test("an incorrect tile submitted to tetris is rejected (exact per-pixel match)"
 });
 
 test("malformed tetris submissions are rejected before any color check", () => {
-  const formatError = "Invalid data format: expected row,col,w,h,#rrggbb,pageRow,pageCol";
+  const formatError = "Invalid data format: expected x,y,w,h,#rrggbb,xSquare,ySquare";
   assert.equal(tetrisInsertError(spec, null), formatError);
   assert.equal(tetrisInsertError(spec, undefined), formatError);
   assert.equal(tetrisInsertError(spec, ""), formatError);
