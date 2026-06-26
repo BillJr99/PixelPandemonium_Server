@@ -25,17 +25,19 @@ Guides a Cloudflare deployment:
   4. Prompts for Worker client URL and allowed origins.
   5. Creates/configures the D1 database if wrangler.jsonc has no database id.
   6. Sets ADMIN_PASSWORD, DEFAULT_TEACHER_KEY and DOWNLOAD_TOKEN as Cloudflare
-     Worker secrets.
+     Worker secrets, and caches them in a gitignored .cloudflare-secrets.env so
+     they can be shown on every deploy (press Enter to keep the cached value).
   7. Applies remote D1 migrations.
   8. Deploys the Worker.
-  9. Prints the Worker URL and the resolved environment values (including the
-     secret values entered this run).
+  9. Prints the Worker URL and the resolved environment values, including the
+     ADMIN_PASSWORD / DEFAULT_TEACHER_KEY / DOWNLOAD_TOKEN values.
 
 With --destroy, the script logs in, asks for explicit confirmation, then deletes
 the Worker and D1 database named in wrangler.jsonc instead of deploying.
 
-The script does not write secret values to repo files. It DOES print secret
-values to the terminal in the final summary, so run it somewhere private.
+Secret values are cached in a gitignored .cloudflare-secrets.env (never committed)
+and printed in the terminal summary, so run it somewhere private. Cloudflare Worker
+secrets cannot be read back from the API, which is why the local cache is used.
 USAGE
       exit 0
       ;;
@@ -87,12 +89,21 @@ prompt_with_default() {
 
 read_secret() {
   local prompt="$1"
+  local default="${2:-}"
   local first
   local second
   while true; do
-    printf '%s' "$prompt: " >&2
+    if [ -n "$default" ]; then
+      printf '%s' "$prompt [keep current]: " >&2
+    else
+      printf '%s' "$prompt: " >&2
+    fi
     read -r -s first
     echo >&2
+    if [ -z "$first" ] && [ -n "$default" ]; then
+      printf '%s' "$default"
+      return 0
+    fi
     printf '%s' "Confirm $prompt: " >&2
     read -r -s second
     echo >&2
@@ -105,6 +116,18 @@ read_secret() {
       return 0
     fi
   done
+}
+
+# Cloudflare Worker secrets are write-only (they cannot be read back via the API),
+# so to print them in the deployment summary on every run we cache the values we
+# set in a gitignored local file. Reads the cached value for a key, or "".
+SECRETS_CACHE=".cloudflare-secrets.env"
+cache_get() {
+  local key="$1"
+  [ -f "$SECRETS_CACHE" ] || { printf ''; return 0; }
+  local line
+  line="$(grep -E "^${key}=" "$SECRETS_CACHE" | tail -n 1 || true)"
+  printf '%s' "${line#*=}"
 }
 
 wrangler() {
@@ -384,21 +407,30 @@ update_wrangler_config "$client_base_url" "$allowed_origins" "$database_id"
 echo "Updated $WRANGLER_CONFIG with Worker vars and D1 database id."
 
 echo
-echo "Cloudflare Worker secrets are required for production."
-admin_password=""
-default_teacher_key=""
-download_token=""
+echo "Cloudflare Worker secrets (printed in the summary below; cached in $SECRETS_CACHE, gitignored)."
+admin_password="$(cache_get ADMIN_PASSWORD)"
+default_teacher_key="$(cache_get DEFAULT_TEACHER_KEY)"
+download_token="$(cache_get DOWNLOAD_TOKEN)"
 secrets_set=0
-if confirm "Set or overwrite ADMIN_PASSWORD, DEFAULT_TEACHER_KEY and DOWNLOAD_TOKEN now?"; then
-  admin_password="$(read_secret "ADMIN_PASSWORD (teacher dashboard / admin)")"
-  default_teacher_key="$(read_secret "DEFAULT_TEACHER_KEY (global teacher portal key)")"
-  download_token="$(read_secret "DOWNLOAD_TOKEN")"
+if confirm "Set/keep ADMIN_PASSWORD, DEFAULT_TEACHER_KEY and DOWNLOAD_TOKEN now?"; then
+  admin_password="$(read_secret "ADMIN_PASSWORD (teacher dashboard / admin)" "$admin_password")"
+  default_teacher_key="$(read_secret "DEFAULT_TEACHER_KEY (global teacher portal key)" "$default_teacher_key")"
+  download_token="$(read_secret "DOWNLOAD_TOKEN" "$download_token")"
   printf '%s' "$admin_password" | wrangler secret put ADMIN_PASSWORD
   printf '%s' "$default_teacher_key" | wrangler secret put DEFAULT_TEACHER_KEY
   printf '%s' "$download_token" | wrangler secret put DOWNLOAD_TOKEN
+  umask 077
+  {
+    printf 'ADMIN_PASSWORD=%s\n' "$admin_password"
+    printf 'DEFAULT_TEACHER_KEY=%s\n' "$default_teacher_key"
+    printf 'DOWNLOAD_TOKEN=%s\n' "$download_token"
+  } > "$SECRETS_CACHE"
+  chmod 600 "$SECRETS_CACHE"
   secrets_set=1
 else
-  echo "Skipping secret setup. Deployment may fail or use existing configured secrets."
+  echo "Skipping secret setup; existing Cloudflare secrets are left unchanged."
+  # If we have cached values from a previous run, still show them in the summary.
+  [ -n "$admin_password$default_teacher_key$download_token" ] && secrets_set=1
 fi
 
 echo
@@ -438,15 +470,15 @@ print_worker_vars
 echo "--- D1 database ---"
 echo "  D1 database name:  $current_database_name"
 echo "  D1 database id:    $database_id"
-echo "--- secrets (stored as Cloudflare Worker secrets, not in repo) ---"
+echo "--- secrets (stored as Cloudflare Worker secrets; cached locally in $SECRETS_CACHE, gitignored) ---"
 if [ "$secrets_set" -eq 1 ]; then
   echo "ADMIN_PASSWORD:      $admin_password"
   echo "DEFAULT_TEACHER_KEY: $default_teacher_key"
   echo "DOWNLOAD_TOKEN:      $download_token"
-  echo "(These were set this run. Treat this terminal output as sensitive.)"
+  echo "(Treat this terminal output as sensitive.)"
 else
-  echo "ADMIN_PASSWORD / DEFAULT_TEACHER_KEY / DOWNLOAD_TOKEN: unchanged this run"
-  echo "(Secret values cannot be read back from Cloudflare; re-run and set them to view.)"
+  echo "ADMIN_PASSWORD / DEFAULT_TEACHER_KEY / DOWNLOAD_TOKEN: not set this run and no local cache."
+  echo "(Cloudflare secrets cannot be read back from the API; set them once to populate the local cache, then they print on every deploy.)"
 fi
 echo "==================================================="
 unset admin_password

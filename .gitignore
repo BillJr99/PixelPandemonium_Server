@@ -1,5 +1,6 @@
 node_modules/
 .env
+.cloudflare-secrets.env
 main.db
 *.db
 *.sqlite
