@@ -60,6 +60,12 @@ remote D1 migrations, and runs `wrangler deploy`. When it finishes it prints the
 Worker URL and the resolved environment values, including the secret values you
 entered during that run, so run it somewhere private.
 
+If your Cloudflare login can reach more than one account — for example because you
+were invited to a shared account as a Workers Platform Admin — the script lists the
+accounts after login and lets you pick which one to deploy to. See
+[Deploying to someone else's Cloudflare account](#deploying-to-someone-elses-cloudflare-account-delegated-access)
+for the full delegation flow.
+
 Re-running the script is safe and is the normal way to ship an update: it reuses
 the existing D1 database (your class data is preserved) unless you explicitly
 choose to destroy and recreate it, and `wrangler deploy` overwrites the Worker
@@ -859,6 +865,49 @@ npm run cloudflare:db:migrate:remote
 ```bash
 npm run cloudflare:deploy
 ```
+
+### Deploying to someone else's Cloudflare account (delegated access)
+
+You can deploy this server into another person's or an organization's Cloudflare
+account — for example a school or shared classroom account — without anyone sharing
+their password. The account owner invites you instead:
+
+1. In **their** Cloudflare dashboard, go to **Manage Account → Members → Invite**.
+2. Invite your email and grant the **Workers Platform Admin** permission. This is the
+   right role for a team member or a back-up admin: it lets you manage Workers, D1,
+   Durable Objects, and secrets without full account access.
+
+Once you accept the invite, your own `wrangler login` authenticates as **you**, while
+the deploy targets **their** account. You just have to tell Wrangler which account to
+use, because `wrangler.jsonc` does not pin an `account_id`.
+
+1. Find the target account ID. After `npx wrangler login`, run:
+
+```bash
+npx wrangler whoami
+```
+
+This prints the **Account Name** and **Account ID** for every account your login can
+reach — your own and any you were invited to. Copy the ID of the account you want to
+deploy to.
+
+2. Point the deploy at that account by exporting the ID before running it:
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID=<their-account-id>
+./scripts/deploy-cloudflare.sh
+```
+
+Every Wrangler step (D1 create, secrets, remote migrations, `wrangler deploy`) then
+runs against that account, and the Worker is published on their `*.workers.dev`
+subdomain. Run `unset CLOUDFLARE_ACCOUNT_ID` when you want to deploy to your own
+account again.
+
+You do not have to set the variable by hand: `./scripts/deploy-cloudflare.sh` runs
+`wrangler whoami` after login, and when your login can reach more than one account it
+shows a numbered menu and sets `CLOUDFLARE_ACCOUNT_ID` to your choice for the rest of
+the run. An account ID already present in the environment is respected and skips the
+menu.
 
 The Cloudflare adapter exposes the same HTTP routes. Realtime uses a WebSocket channel contract rather than the Faye Node client, because Faye’s Node adapter is not supported in Workers.
 

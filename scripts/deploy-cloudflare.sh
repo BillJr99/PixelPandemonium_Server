@@ -138,6 +138,101 @@ wrangler() {
   fi
 }
 
+# Parse `wrangler whoami` output into "id<TAB>name" lines, one per account the
+# current login can reach. Wrangler prints a box-drawing table with an
+# "Account Name | Account ID" header; account ids are 32 hex characters.
+parse_whoami_accounts() {
+  local file="$1"
+  node - "$file" <<'NODE'
+const fs = require("fs");
+const text = fs.readFileSync(process.argv[2], "utf8");
+const out = [];
+const seen = new Set();
+for (const line of text.split("\n")) {
+  const id = line.match(/[0-9a-fA-F]{32}/);
+  if (!id) continue;
+  // Split the box-drawing row into cells and drop the id cell to recover the name.
+  const cells = line
+    .split(/[│|]/)
+    .map((cell) => cell.trim())
+    .filter((cell) => cell.length > 0);
+  const name = cells.find((cell) => cell !== id[0]) || "(unnamed account)";
+  if (name === "Account Name") continue; // header row
+  if (seen.has(id[0])) continue;
+  seen.add(id[0]);
+  out.push(`${id[0]}\t${name}`);
+}
+process.stdout.write(out.join("\n"));
+NODE
+}
+
+# After login, figure out which Cloudflare account the deploy should target. A
+# login invited onto another account (e.g. as a Workers Platform Admin / back-up
+# admin) can reach more than one account, and Wrangler will otherwise prompt
+# mid-run, which breaks the piped commands below. When several accounts are
+# reachable we present a menu and export CLOUDFLARE_ACCOUNT_ID for the rest of the
+# script. An account id already set in the environment is respected as-is.
+select_cloudflare_account() {
+  if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+    echo "Using CLOUDFLARE_ACCOUNT_ID from the environment: $CLOUDFLARE_ACCOUNT_ID"
+    return
+  fi
+
+  echo
+  echo "Listing Cloudflare accounts your login can access (wrangler whoami)..."
+  local whoami_output
+  whoami_output="$(mktemp)"
+  if ! wrangler whoami >"$whoami_output" 2>&1; then
+    echo "Could not run 'wrangler whoami'; continuing with Wrangler's default account selection." >&2
+    rm -f "$whoami_output"
+    return
+  fi
+
+  local accounts
+  accounts="$(parse_whoami_accounts "$whoami_output")"
+  rm -f "$whoami_output"
+
+  if [ -z "$accounts" ]; then
+    echo "Could not read an account list from 'wrangler whoami'; continuing with Wrangler's default." >&2
+    return
+  fi
+
+  local ids=()
+  local names=()
+  while IFS=$'\t' read -r id name; do
+    [ -n "$id" ] || continue
+    ids+=("$id")
+    names+=("$name")
+  done <<< "$accounts"
+
+  if [ "${#ids[@]}" -eq 1 ]; then
+    echo "One Cloudflare account is accessible: ${names[0]} (${ids[0]}). Using it."
+    return
+  fi
+
+  echo
+  echo "Multiple Cloudflare accounts are accessible:"
+  local i
+  for i in "${!ids[@]}"; do
+    echo "  $((i + 1))) ${names[$i]} (${ids[$i]})"
+  done
+
+  local choice
+  while true; do
+    printf '%s' "Select account to deploy to [1]: " >&2
+    read -r choice
+    choice="${choice:-1}"
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#ids[@]}" ]; then
+      break
+    fi
+    echo "Enter a number between 1 and ${#ids[@]}." >&2
+  done
+
+  local selected_index=$((choice - 1))
+  export CLOUDFLARE_ACCOUNT_ID="${ids[$selected_index]}"
+  echo "Deploying to: ${names[$selected_index]} ($CLOUDFLARE_ACCOUNT_ID)"
+}
+
 json_value() {
   local expression="$1"
   node -e "
@@ -332,6 +427,8 @@ else
   echo
   echo "Skipping Wrangler login because --skip-login was provided."
 fi
+
+select_cloudflare_account
 
 current_worker_name="$(json_value 'config.name')"
 current_client_base_url="$(json_value 'config.vars && config.vars.CLIENT_BASE_URL')"
