@@ -343,7 +343,7 @@ actions require `teacherKey=...`, `teacherKey` in the JSON body, or the
 The built-in public Tetris demo is the exception. The server always seeds
 `instanceCode=tetris` and `instanceName=tetris` for the bundled Tetris picture.
 Anyone can open `instructions.html?instance=tetris`, submit pixels, or retrieve
-replay rows without a class key. Teachers can reset it without a teacher key or
+replay rows without a class key. Anyone can reset it without a key or
 admin password. The public demo cannot be deleted or deactivated, and teachers
 cannot create another instance named `tetris`.
 

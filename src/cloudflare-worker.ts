@@ -163,6 +163,33 @@ function isTetrisDemoCode(code: string): boolean {
   return String(code || "").toLowerCase() === "tetris";
 }
 
+function parseTetrisData(data: string | null | undefined): { colorHex: string; xSquare: number; ySquare: number } | null {
+  if (data === null || data === undefined) return null;
+  const parts = String(data).split(",");
+  if (parts.length !== 7) return null;
+  for (const i of [0, 1, 2, 3, 5, 6]) {
+    if (!/^\s*\d+\s*$/.test(parts[i])) return null;
+  }
+  const colorHex = parts[4].trim().toLowerCase();
+  if (!/^#[0-9a-f]{6}$/.test(colorHex)) return null;
+  return { colorHex, xSquare: parseInt(parts[5].trim(), 10), ySquare: parseInt(parts[6].trim(), 10) };
+}
+
+function expectedTetrisColor(spec: any, xSquare: number, ySquare: number): string | null {
+  const PW = 5, PH = 3;
+  if (!spec || !spec.pages || !spec.palette) return null;
+  if (xSquare < 0 || xSquare >= spec.numCols * PW) return null;
+  if (ySquare < 0 || ySquare >= spec.numRows * PH) return null;
+  const colLabel = String.fromCharCode(65 + Math.floor(xSquare / PW));
+  const rowLabel = String(Math.floor(ySquare / PH) + 1);
+  const page = spec.pages.find((p: any) => p.col === colLabel && p.row === rowLabel);
+  if (!page) return null;
+  const paletteIdx = page.uncompressed[(ySquare % PH) * PW + (xSquare % PW)];
+  const rgb = spec.palette[paletteIdx];
+  if (!rgb) return null;
+  return `#${rgb[0].toString(16).padStart(2, "0")}${rgb[1].toString(16).padStart(2, "0")}${rgb[2].toString(16).padStart(2, "0")}`;
+}
+
 // Realtime channels are "/faye/messages/<instanceCode>"; returns the instance
 // code so the channel can be authorized with that instance's access key.
 function realtimeChannelInstanceCode(channel: string): string | null {
@@ -718,6 +745,16 @@ export default {
         const body = await readRequestBody(request);
         const accessError = await instanceAccessError(request, env, url, row, body);
         if (accessError) return accessError;
+        if (isTetrisDemoCode(code)) {
+          const parsed = parseTetrisData(body.data ?? null);
+          if (!parsed) return json(request, env, { error: "Invalid data format: expected row,col,w,h,#rrggbb,pageRow,pageCol" }, { status: 400 });
+          const pic = await env.DB.prepare("SELECT SPEC_JSON FROM PICTURES WHERE ID = ? AND ENABLED = 1").bind(row.PICTURE_ID).first<any>();
+          const spec = pic?.SPEC_JSON ? JSON.parse(pic.SPEC_JSON) : null;
+          const expected = expectedTetrisColor(spec, parsed.xSquare, parsed.ySquare);
+          if (expected !== null && parsed.colorHex !== expected) {
+            return json(request, env, { error: "Color does not match the expected color for that tile" }, { status: 400 });
+          }
+        }
         await env.DB.prepare("INSERT INTO DATA (INSTANCE_CODE, NAME, DATA) VALUES (?, ?, ?)").bind(code, code, body.data ?? null).run();
         return json(request, env, { status: "created" }, { status: 201 });
       }

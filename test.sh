@@ -118,10 +118,14 @@ curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/teacher/instances?teacherAccessKey=tea
 
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/tetris/status" | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!d.valid || d.instanceCode!=='tetris' || d.pictureId!=='tetris') process.exit(1)"
 curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
-  -d '{"data":"0,0,10,10,#abcdef,0,0"}' \
+  -d '{"data":"0,0,10,10,#ffffff,0,0"}' \
   "$BASE_URL/instance/tetris/insert" >/dev/null
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/tetris/retrieve" \
-  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!d.some(row => row.DATA && row.DATA.includes('#abcdef'))) process.exit(1)"
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!d.some(row => row.DATA && row.DATA.includes('#ffffff'))) process.exit(1)"
+TETRIS_BAD_COLOR_STATUS="$(curl -s -o /dev/null -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" -d '{"data":"0,0,10,10,#ff0000,0,0"}' "$BASE_URL/instance/tetris/insert")"
+test "$TETRIS_BAD_COLOR_STATUS" = "400"
+TETRIS_BAD_FORMAT_STATUS="$(curl -s -o /dev/null -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" -d '{"data":"garbage"}' "$BASE_URL/instance/tetris/insert")"
+test "$TETRIS_BAD_FORMAT_STATUS" = "400"
 curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
   -d '{}' \
   "$BASE_URL/instance/tetris/reset" >/dev/null
