@@ -9,6 +9,7 @@ const faye = require("faye");
 const sqlite3 = require("sqlite3").verbose();
 const { loadConfig } = require("./config");
 const { APP_VERSION } = require("./version");
+const { isTetrisDemoCode, tetrisInsertError } = require("./tetrisDemo");
 const {
   migrate,
   createInstance,
@@ -236,10 +237,6 @@ function buildStudentUrls(instanceCode, accessKey) {
 
 function generateUrlKey() {
   return crypto.randomBytes(8).toString("hex").toUpperCase();
-}
-
-function isTetrisDemoCode(code) {
-  return String(code || "").toLowerCase() === "tetris";
 }
 
 function isTetrisDemo(row) {
@@ -747,33 +744,6 @@ app.get("/instance/:code/status", async (req, res) => {
   }
 });
 
-function parseTetrisData(data) {
-  if (data === null || data === undefined) return null;
-  const parts = String(data).split(",");
-  if (parts.length !== 7) return null;
-  for (const i of [0, 1, 2, 3, 5, 6]) {
-    if (!/^\s*\d+\s*$/.test(parts[i])) return null;
-  }
-  const colorHex = parts[4].trim().toLowerCase();
-  if (!/^#[0-9a-f]{6}$/.test(colorHex)) return null;
-  return { colorHex, xSquare: parseInt(parts[5].trim(), 10), ySquare: parseInt(parts[6].trim(), 10) };
-}
-
-function expectedTetrisColor(spec, xSquare, ySquare) {
-  const PW = 5, PH = 3;
-  if (!spec || !spec.pages || !spec.palette) return null;
-  if (xSquare < 0 || xSquare >= spec.numCols * PW) return null;
-  if (ySquare < 0 || ySquare >= spec.numRows * PH) return null;
-  const colLabel = String.fromCharCode(65 + Math.floor(xSquare / PW));
-  const rowLabel = String(Math.floor(ySquare / PH) + 1);
-  const page = spec.pages.find(p => p.col === colLabel && p.row === rowLabel);
-  if (!page) return null;
-  const paletteIdx = page.uncompressed[(ySquare % PH) * PW + (xSquare % PW)];
-  const rgb = spec.palette[paletteIdx];
-  if (!rgb) return null;
-  return `#${rgb[0].toString(16).padStart(2, "0")}${rgb[1].toString(16).padStart(2, "0")}${rgb[2].toString(16).padStart(2, "0")}`;
-}
-
 app.post("/instance/:code/insert", async (req, res) => {
   const db = openDb();
   try {
@@ -782,14 +752,10 @@ app.post("/instance/:code/insert", async (req, res) => {
     await requireInstanceAccess(db, req, row);
     const data = req.body.data === undefined ? null : String(req.body.data);
     if (isTetrisDemo(row)) {
-      const parsed = parseTetrisData(data);
-      if (!parsed) return res.status(400).json({ error: "Invalid data format: expected row,col,w,h,#rrggbb,pageRow,pageCol" });
       const picture = await getPicture(db, row.PICTURE_ID);
       const spec = picture && picture.specJson ? JSON.parse(picture.specJson) : null;
-      const expected = expectedTetrisColor(spec, parsed.xSquare, parsed.ySquare);
-      if (expected !== null && parsed.colorHex !== expected) {
-        return res.status(400).json({ error: "Color does not match the expected color for that tile" });
-      }
+      const demoError = tetrisInsertError(spec, data);
+      if (demoError) return res.status(400).json({ error: demoError });
     }
     await run(db, "INSERT INTO DATA (INSTANCE_CODE, NAME, DATA) VALUES (?, ?, ?)", [
       req.params.code,
