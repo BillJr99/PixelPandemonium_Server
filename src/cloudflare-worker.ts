@@ -163,6 +163,25 @@ function isTetrisDemoCode(code: string): boolean {
   return String(code || "").toLowerCase() === "tetris";
 }
 
+function parseTetrisData(data: string | null | undefined): { colorHex: string } | null {
+  if (data === null || data === undefined) return null;
+  const parts = String(data).split(",");
+  if (parts.length !== 7) return null;
+  for (const i of [0, 1, 2, 3, 5, 6]) {
+    if (!/^\s*\d+\s*$/.test(parts[i])) return null;
+  }
+  const colorHex = parts[4].trim().toLowerCase();
+  if (!/^#[0-9a-f]{6}$/.test(colorHex)) return null;
+  return { colorHex };
+}
+
+function specPaletteHexSet(spec: any): Set<string> {
+  const palette: number[][] = spec && Array.isArray(spec.palette) ? spec.palette : [];
+  return new Set(palette.map(([r, g, b]) =>
+    `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`
+  ));
+}
+
 // Realtime channels are "/faye/messages/<instanceCode>"; returns the instance
 // code so the channel can be authorized with that instance's access key.
 function realtimeChannelInstanceCode(channel: string): string | null {
@@ -718,6 +737,16 @@ export default {
         const body = await readRequestBody(request);
         const accessError = await instanceAccessError(request, env, url, row, body);
         if (accessError) return accessError;
+        if (isTetrisDemoCode(code)) {
+          const parsed = parseTetrisData(body.data ?? null);
+          if (!parsed) return json(request, env, { error: "Invalid data format: expected row,col,w,h,#rrggbb,pageRow,pageCol" }, { status: 400 });
+          const pic = await env.DB.prepare("SELECT SPEC_JSON FROM PICTURES WHERE ID = ? AND ENABLED = 1").bind(row.PICTURE_ID).first<any>();
+          const spec = pic?.SPEC_JSON ? JSON.parse(pic.SPEC_JSON) : null;
+          const validColors = specPaletteHexSet(spec);
+          if (validColors.size > 0 && !validColors.has(parsed.colorHex)) {
+            return json(request, env, { error: "Color is not in the picture palette" }, { status: 400 });
+          }
+        }
         await env.DB.prepare("INSERT INTO DATA (INSTANCE_CODE, NAME, DATA) VALUES (?, ?, ?)").bind(code, code, body.data ?? null).run();
         return json(request, env, { status: "created" }, { status: 201 });
       }
