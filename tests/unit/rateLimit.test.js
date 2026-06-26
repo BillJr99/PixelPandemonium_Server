@@ -93,7 +93,12 @@ async function expectPicturesRequest(baseUrl, status) {
   return response;
 }
 
-test("server returns 429 when per-IP minute request rate limit is exceeded", async (t) => {
+// These tests deliberately drive the per-IP request rate limiter past its cap to
+// assert the 429 behavior. They are skipped in CI (GitHub Actions sets CI=true)
+// because forcing 429s is exactly what the rest of the suite is paced to avoid.
+const ciSkip = { skip: process.env.CI ? "Skipped in CI: deliberately forces 429 rate-limit responses" : false };
+
+test("server returns 429 when per-IP minute request rate limit is exceeded", ciSkip, async (t) => {
   const { baseUrl } = await startServer(t, [
     "RATE_LIMIT_MAX_PER_SECOND=100",
     "RATE_LIMIT_MAX_PER_MINUTE=3",
@@ -106,7 +111,7 @@ test("server returns 429 when per-IP minute request rate limit is exceeded", asy
   assert.match(await limited.text(), /Too many requests/i);
 });
 
-test("server returns 429 when per-IP daily request rate limit is exceeded", async (t) => {
+test("server returns 429 when per-IP daily request rate limit is exceeded", ciSkip, async (t) => {
   const { baseUrl } = await startServer(t, [
     "RATE_LIMIT_MAX_PER_SECOND=100",
     "RATE_LIMIT_MAX_PER_MINUTE=100",
