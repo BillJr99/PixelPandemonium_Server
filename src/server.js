@@ -747,6 +747,25 @@ app.get("/instance/:code/status", async (req, res) => {
   }
 });
 
+function parseTetrisData(data) {
+  if (data === null || data === undefined) return null;
+  const parts = String(data).split(",");
+  if (parts.length !== 7) return null;
+  for (const i of [0, 1, 2, 3, 5, 6]) {
+    if (!/^\s*\d+\s*$/.test(parts[i])) return null;
+  }
+  const colorHex = parts[4].trim().toLowerCase();
+  if (!/^#[0-9a-f]{6}$/.test(colorHex)) return null;
+  return { colorHex };
+}
+
+function specPaletteHexSet(spec) {
+  const palette = spec && Array.isArray(spec.palette) ? spec.palette : [];
+  return new Set(palette.map(([r, g, b]) =>
+    `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`
+  ));
+}
+
 app.post("/instance/:code/insert", async (req, res) => {
   const db = openDb();
   try {
@@ -754,6 +773,16 @@ app.post("/instance/:code/insert", async (req, res) => {
     const row = await requireActiveInstance(db, req.params.code);
     await requireInstanceAccess(db, req, row);
     const data = req.body.data === undefined ? null : String(req.body.data);
+    if (isTetrisDemo(row)) {
+      const parsed = parseTetrisData(data);
+      if (!parsed) return res.status(400).json({ error: "Invalid data format: expected row,col,w,h,#rrggbb,pageRow,pageCol" });
+      const picture = await getPicture(db, row.PICTURE_ID);
+      const spec = picture && picture.specJson ? JSON.parse(picture.specJson) : null;
+      const validColors = specPaletteHexSet(spec);
+      if (validColors.size > 0 && !validColors.has(parsed.colorHex)) {
+        return res.status(400).json({ error: "Color is not in the picture palette" });
+      }
+    }
     await run(db, "INSERT INTO DATA (INSTANCE_CODE, NAME, DATA) VALUES (?, ?, ?)", [
       req.params.code,
       req.params.code,
