@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Unit & integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      # Runs the node:test suites under tests/unit, including the integration
+      # tests that boot the real Node server on a free port. These need no
+      # Cloudflare deployment. Worker-only behavior (D1, the deployed spec.js
+      # route) is validated at deploy time by `wrangler deploy` and is skipped here.
+      - name: Run tests
+        run: node --test tests/unit/*.test.js

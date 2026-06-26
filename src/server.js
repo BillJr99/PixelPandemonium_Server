@@ -20,8 +20,8 @@ const {
   listPictures,
   getPicture,
   createCustomPicture,
-  customPictureSpecJs,
-  customPictureArtifacts,
+  pictureSpecJs,
+  pictureArtifacts,
   ensureTeacherKey,
   listTeacherKeys,
   createTeacherKey,
@@ -192,7 +192,11 @@ async function ensureMigrated(db) {
 
 function originAllowed(origin) {
   if (!origin) return true;
-  return (config.allowed_origins || []).some((allowed) => origin === allowed || origin.endsWith(allowed));
+  const candidate = String(origin).toLowerCase();
+  return (config.allowed_origins || []).some((entry) => {
+    const allowed = String(entry).toLowerCase();
+    return candidate === allowed || candidate.endsWith(allowed);
+  });
 }
 
 function buildUrls(instanceCode, adminCode, accessKey, teacherKey) {
@@ -265,8 +269,11 @@ async function publicInstanceWithPicture(db, row) {
     data.pictureTitle = picture.title;
     data.pictureScript = picture.script;
     data.pictureCustom = !!picture.custom;
+    // Both predefined and custom pictures are served from the server spec.js
+    // endpoint, so expose pictureSpecUrl uniformly. The downloadable zip link is
+    // only surfaced for custom uploads (no client UI offers it for predefined).
+    data.pictureSpecUrl = `/pictures/${encodeURIComponent(picture.id)}/spec.js`;
     if (picture.custom) {
-      data.pictureSpecUrl = `/pictures/${encodeURIComponent(picture.id)}/spec.js`;
       data.pictureZipUrl = `/pictures/${encodeURIComponent(picture.id)}/spec-files.zip`;
     }
   }
@@ -630,7 +637,7 @@ app.get("/pictures/:id/spec.js", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
-    res.type("application/javascript; charset=utf-8").send(await customPictureSpecJs(db, req.params.id));
+    res.type("application/javascript; charset=utf-8").send(await pictureSpecJs(db, req.params.id));
   } catch (err) {
     errorResponse(req, res, err);
   } finally {
@@ -642,7 +649,7 @@ app.get("/pictures/:id/spec-files.zip", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
-    const { title, artifacts } = await customPictureArtifacts(db, req.params.id);
+    const { title, artifacts } = await pictureArtifacts(db, req.params.id);
     const filename = `${String(title).replace(/[^a-z0-9_-]+/gi, "_") || "custom"}_spec_files.zip`;
     res.setHeader("content-type", "application/zip");
     res.setHeader("content-disposition", `attachment; filename="${filename}"`);

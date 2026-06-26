@@ -9,8 +9,8 @@ const {
   resetInstance,
   listPictures,
   createCustomPicture,
-  customPictureSpecJs,
-  customPictureArtifacts,
+  pictureSpecJs,
+  pictureArtifacts,
   validateCheckDigit,
   generateInstanceCode,
   run,
@@ -155,12 +155,12 @@ test("createCustomPicture stores normalized specs and generated artifacts", asyn
   const pictures = await listPictures(db);
   assert.ok(pictures.some((item) => item.id === picture.id && item.custom === 1));
 
-  const js = await customPictureSpecJs(db, picture.id);
+  const js = await pictureSpecJs(db, picture.id);
   assert.match(js, /var palette =/);
   assert.match(js, /var numRows = 1/);
   assert.match(js, /var pages =/);
 
-  const { artifacts } = await customPictureArtifacts(db, picture.id);
+  const { artifacts } = await pictureArtifacts(db, picture.id);
   assert.ok(artifacts["Post-It_tiny_custom_composite.js"]);
   assert.ok(artifacts["Post-It_tiny_custom_composite.csv"]);
   assert.ok(artifacts["Post-It_tiny_custom_uncompressed.txt"]);

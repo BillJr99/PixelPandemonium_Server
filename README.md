@@ -25,9 +25,13 @@ npm install
 ## Quick Start: Cloudflare Server + Hosted Client
 
 When deploying the server to Cloudflare and hosting the static client on GitHub
-Pages, make sure the server allows the browser origin of the client. In
-`config.yaml`, include the client origin in `allowed_origins` and set
-`client_base_url` to the full public client URL:
+Pages, make sure the server allows the browser origin of the client. For the
+**deployed Cloudflare Worker** the origin list lives in `ALLOWED_ORIGINS` in
+`wrangler.jsonc` (the deploy script prompts for it); the `allowed_origins` in
+`config.yaml` shown below applies to the **local Node server**. See
+[CORS / Allowed Origins](#cors--allowed-origins) for the full rules, including the
+custom-domain + `*.github.io` dual-origin requirement. Set `client_base_url` to
+the full public client URL:
 
 ```yaml
 allowed_origins:
@@ -35,9 +39,10 @@ allowed_origins:
 client_base_url: https://YOUR-GITHUB-USER.github.io/PixelPandemonium_Client
 ```
 
-If the client is hosted on a custom domain, use that origin instead. The client
-repository must point `server_url` and `realtime_url` at the Cloudflare Worker
-URL or custom Worker domain.
+If the client is hosted on a custom domain, list both that origin and the
+underlying `*.github.io` origin (see the CORS section). The client repository must
+point `server_url` and `realtime_url` at the Cloudflare Worker URL or custom
+Worker domain.
 
 The guided Cloudflare deployment script can walk through the full server
 deployment:
@@ -84,6 +89,45 @@ Cloudflare and may change.
 
 ## Configuration
 
+### Where configuration values come from
+
+This project has two server runtimes that read configuration from completely
+separate places. They are **not** synced — a value set for one has no effect on
+the other, so when a setting must match across both (for example the allowed
+origins), set it in both.
+
+**Local Node/Express server** (`npm start`, `./scripts/deploy-local.sh`), in
+increasing order of priority:
+
+1. Built-in defaults in `src/config.js`.
+2. `config.yaml` overrides those defaults.
+3. `.env` / environment variables override `config.yaml` (highest priority).
+
+`deploy-local.sh` writes the prompted values into `.env`; it never edits
+`config.yaml`. Keys it does not prompt for (e.g. `database_path`,
+`client_base_url`, `cleanup_interval_minutes`, `sqlite_busy_timeout_ms`) come from
+`config.yaml` or the defaults — edit `config.yaml` by hand to change those.
+
+**Cloudflare Worker** (`wrangler deploy`, `./scripts/deploy-cloudflare.sh`):
+
+1. Non-secret values come from `vars` in `wrangler.jsonc`, applied on each deploy.
+2. Secrets (`ADMIN_PASSWORD`, `DEFAULT_TEACHER_KEY`, `DOWNLOAD_TOKEN`) are stored
+   as Cloudflare Worker secrets by the deploy script, never in a file.
+3. A changed `wrangler.jsonc` takes effect only after a redeploy; a variable set
+   directly in the Cloudflare dashboard can diverge from the file until the next
+   deploy re-applies it.
+
+The Worker reads **only** its `env` bindings (`wrangler.jsonc` `vars` + secrets +
+the D1 and Durable Object bindings). It does **not** read `config.yaml` or `.env`
+at all — those files apply solely to the local Node server. `deploy-cloudflare.sh`
+writes prompted values into `wrangler.jsonc` and stores secrets with Wrangler.
+
+Both deploy scripts print the full effective configuration for their runtime in
+the closing summary, so you can audit exactly what will run. For the origin
+allow-list specifically, see [CORS / Allowed Origins](#cors--allowed-origins).
+
+### Settings reference
+
 Edit `config.yaml` and create a local `.env` before running or deploying.
 
 - `port`: local Express port.
@@ -123,6 +167,7 @@ The `.env` format is simple `KEY=value` lines:
 ADMIN_PASSWORD=admin
 DEFAULT_TEACHER_KEY=teacher
 DOWNLOAD_TOKEN=change-me-before-deploying
+ALLOWED_ORIGINS=http://localhost:4000,http://127.0.0.1:4000,https://billmongan.com,https://www.billmongan.com,https://billjr99.github.io
 AUTH_FAILURE_LIMIT=5
 AUTH_FAILURE_WINDOW_MINUTES=10
 AUTH_ADMIN_BAN_DAYS=1
@@ -142,6 +187,9 @@ Change production secret values before public deployment:
 - `DEFAULT_TEACHER_KEY`: the default global teacher key seeded into the
   database on every server startup. Local default: `teacher`.
 - `DOWNLOAD_TOKEN`: the bearer/query token required by `/download`.
+- `ALLOWED_ORIGINS`: comma-separated browser origins allowed to call the API
+  (CORS). When set, it overrides `allowed_origins` in `config.yaml` for the local
+  Node server. See [CORS / Allowed Origins](#cors--allowed-origins).
 - `AUTH_FAILURE_LIMIT`: failed key/password attempts before a temporary IP ban.
 - `AUTH_FAILURE_WINDOW_MINUTES`: minutes in the auth-failure counting window.
 - `AUTH_ADMIN_BAN_DAYS`: days to ban an IP after too many admin password/code failures. Default: `1`.
@@ -169,6 +217,59 @@ use `./scripts/deploy-cloudflare.sh` to configure `wrangler.jsonc`, create or
 reuse the D1 database, and store production secrets with Wrangler. The server
 `.env` file is for local Node/Express runs; it is not the production secret
 store for the deployed Worker.
+
+## CORS / Allowed Origins
+
+The server only answers browser API calls whose `Origin` is on an allow-list.
+A request with **no** `Origin` header (server-to-server, `curl`, the `/health`
+probe) is always allowed; browsers, however, always send `Origin` on the
+cross-origin `fetch` to the Worker, so a missing entry blocks every student.
+A blocked request gets `403 {"error":"Forbidden: Invalid origin"}`. Matching is
+case-insensitive.
+
+**Two runtimes, two separate sources — they are not auto-synced:**
+
+| Runtime | Source of allowed origins | Used by |
+| --- | --- | --- |
+| Cloudflare Worker (production) | `ALLOWED_ORIGINS` in `wrangler.jsonc` | `deploy-cloudflare.sh` (its prompt default is read from `wrangler.jsonc`, **not** `config.yaml`) and a bare `wrangler deploy` |
+| Local Node/Express | `allowed_origins` in `config.yaml`, overridden by `ALLOWED_ORIGINS` in `.env` if set | `deploy-local.sh` / `npm start` |
+
+Because the Cloudflare deploy reads its default from `wrangler.jsonc` and the
+local server reads `config.yaml`/`.env`, **update the origin list in both places**
+when it changes — editing `config.yaml` alone does not affect the deployed Worker.
+
+**Custom-domain GitHub Pages needs two origins.** When the client is served from
+a custom domain that fronts GitHub Pages, browsers may report either origin, so
+list both the custom domain and the underlying `*.github.io` host. Also list the
+`www` and apex hosts separately — `https://www.billmongan.com` does not match an
+entry of `https://billmongan.com`. The shipped default covers this project:
+
+```
+http://localhost:4000,https://billmongan.com,https://www.billmongan.com,https://billjr99.github.io
+```
+
+Both deploy scripts prompt for the origin list and default to the committed
+values, so pressing Enter keeps these. To customize, type a comma-separated list
+at the prompt.
+
+**A changed `ALLOWED_ORIGINS` only takes effect after a redeploy.** Editing
+`wrangler.jsonc` does nothing until you run `./scripts/deploy-cloudflare.sh` (or
+`npm run cloudflare:deploy`). If the deployed Worker still rejects an origin that
+is already in `wrangler.jsonc`, check for an `ALLOWED_ORIGINS` variable set in the
+Cloudflare dashboard, which overrides the file.
+
+**Troubleshooting:** if students are unexpectedly prompted for a class access key
+on the public Tetris demo, it is almost always a `403 Forbidden: Invalid origin`
+from a missing allowed origin, not a real key problem. Verify with:
+
+```bash
+curl -s -H "Origin: https://YOUR-CLIENT-HOST" \
+  https://YOUR-WORKER.workers.dev/instance/tetris/status
+```
+
+A correctly configured origin returns `200` with `"valid": true`; a blocked
+origin returns `403 Forbidden: Invalid origin`. (Space repeated probes a few
+seconds apart so the per-IP rate limiter does not answer with `429` first.)
 
 ## Local Run
 
@@ -329,6 +430,7 @@ Required local `.env` values:
 ADMIN_PASSWORD=admin
 DEFAULT_TEACHER_KEY=teacher
 DOWNLOAD_TOKEN=change-me-before-deploying
+ALLOWED_ORIGINS=http://localhost:4000,http://127.0.0.1:4000,https://billmongan.com,https://www.billmongan.com,https://billjr99.github.io
 AUTH_FAILURE_LIMIT=5
 AUTH_FAILURE_WINDOW_MINUTES=10
 AUTH_ADMIN_BAN_DAYS=1
@@ -344,6 +446,9 @@ LEGACY_ROUTES_ENABLED=false
 - `DEFAULT_TEACHER_KEY` is the first global teacher key, seeded into the
   database on every startup. The local default is `teacher`.
 - `DOWNLOAD_TOKEN` protects the full replay-data export at `/download`.
+- `ALLOWED_ORIGINS` is the comma-separated list of browser origins allowed to
+  call the API. When set it overrides `allowed_origins` in `config.yaml`. See
+  [CORS / Allowed Origins](#cors--allowed-origins).
 - `AUTH_FAILURE_LIMIT` and `AUTH_FAILURE_WINDOW_MINUTES` control how many
   failed auth attempts are allowed within the counting window.
 - `AUTH_ADMIN_BAN_DAYS`, `AUTH_TEACHER_BAN_MINUTES`, and
@@ -371,15 +476,48 @@ server does not finish startup.
 
 ### List pictures
 
-The server prepopulates the database with the bundled Pixel Pandemonium image inventory, including the public Tetris demo.
+The picture catalog lives entirely on the server. The database is prepopulated
+with the bundled Pixel Pandemonium image inventory (including the public Tetris
+demo); the static client no longer carries a picture list or any picture files —
+it fetches `/pictures` for its create/admin menus.
 
 ```bash
 curl http://localhost:8000/pictures \
   -H 'Origin: http://localhost:4000'
 ```
 
-`POST /instance/create` validates `pictureId` against this table. The table also
-stores teacher-created custom pictures.
+Each entry returns `id`, `title`, `script` (always `/pictures/<id>/spec.js`),
+`custom` (0 for predefined, 1 for teacher-created), and `numRows`/`numCols`.
+`POST /instance/create` validates `pictureId` against this table.
+
+#### Seeded (predefined) pictures
+
+The predefined catalog is stored as protected (`CUSTOM=0`) rows that carry their
+full spec in `SPEC_JSON`, served from `/pictures/<id>/spec.js` exactly like custom
+pictures. They are **read-only templates**: a teacher selects one to create their
+own instance (under their own teacher key / name); the seed images themselves
+cannot be modified or overwritten except by an admin (a custom upload can never
+target a predefined id — see [Create a custom picture](#create-a-custom-picture)).
+
+The seed data is generated from the original posterizer composite files by
+`scripts/extract-picture-specs.js`, which writes two outputs that must always be
+regenerated together (never hand-edited):
+
+- `src/data/pictureSeeds.json` — loaded at startup by the Node server's `seedPictures()`.
+- `migrations/0003_seed_picture_specs.sql` — applied to D1/Cloudflare via `wrangler d1 migrations apply`.
+
+To re-run after the source composites change:
+
+```bash
+node scripts/extract-picture-specs.js [path-to-PixelPandemonium_Client]
+```
+
+The 16 seeded images: `tetris` (Demo (Tetris)), `cs4allpa2022`, `cs4philly2021`,
+`cs4philly2022`, `eagles`, `eagles2`, `ghopper`, `lovestatue`, `mikewazowski`,
+`phillyscifest`, `pixar2022`, `robotspringboard`, `robotspringboard2022`,
+`rocky2022`, `yellowsubmarine`, `yellowsubmarine2022`.
+
+The table also stores teacher-created custom pictures (`CUSTOM=1`).
 
 ### Create a custom picture
 

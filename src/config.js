@@ -100,6 +100,10 @@ function loadConfig(configPath = path.join(process.cwd(), "config.yaml")) {
     ...parsed,
     allowed_origins: parsed.allowed_origins || DEFAULTS.allowed_origins
   };
+  if (process.env.ALLOWED_ORIGINS) {
+    const origins = process.env.ALLOWED_ORIGINS.split(",").map((item) => item.trim()).filter(Boolean);
+    if (origins.length) config.allowed_origins = origins;
+  }
   if (process.env.PIXEL_PANDEMONIUM_SQLITE_BUSY_TIMEOUT_MS) {
     config.sqlite_busy_timeout_ms = Number(process.env.PIXEL_PANDEMONIUM_SQLITE_BUSY_TIMEOUT_MS);
   }

@@ -127,6 +127,21 @@ else console.log(String(value));
 "
 }
 
+# Print every non-secret var that will be deployed to the Worker, so the final
+# installation can be audited. Secrets (ADMIN_PASSWORD/DEFAULT_TEACHER_KEY/
+# DOWNLOAD_TOKEN) are stored as Cloudflare secrets and removed from vars, so they
+# never appear here; they are summarized separately below.
+print_worker_vars() {
+  node -e "
+const fs = require('fs');
+const config = JSON.parse(fs.readFileSync('$WRANGLER_CONFIG', 'utf8'));
+const vars = config.vars || {};
+for (const key of Object.keys(vars)) {
+  console.log('  ' + key + ': ' + vars[key]);
+}
+"
+}
+
 update_wrangler_config() {
   local client_base_url="$1"
   local allowed_origins="$2"
@@ -418,11 +433,11 @@ else
   echo "Worker URL:          (not detected in deploy output)"
 fi
 echo "Worker name:         $current_worker_name"
-echo "CLIENT_BASE_URL:     $(json_value 'config.vars && config.vars.CLIENT_BASE_URL')"
-echo "ALLOWED_ORIGINS:     $(json_value 'config.vars && config.vars.ALLOWED_ORIGINS')"
-echo "DEFAULT_EXPIRATION_HOURS: $(json_value 'config.vars && config.vars.DEFAULT_EXPIRATION_HOURS')"
-echo "D1 database name:    $current_database_name"
-echo "D1 database id:      $database_id"
+echo "--- Worker vars (all non-secret values from $WRANGLER_CONFIG) ---"
+print_worker_vars
+echo "--- D1 database ---"
+echo "  D1 database name:  $current_database_name"
+echo "  D1 database id:    $database_id"
 echo "--- secrets (stored as Cloudflare Worker secrets, not in repo) ---"
 if [ "$secrets_set" -eq 1 ]; then
   echo "ADMIN_PASSWORD:      $admin_password"

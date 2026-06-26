@@ -15,7 +15,7 @@ Usage: ./scripts/deploy-local.sh [--no-start]
 Configures and runs the local (Node + Faye) server:
   1. Checks local tools and installs npm dependencies if needed.
   2. Prompts for the default admin password, global teacher key, download token,
-     and the rate-limit / auth-ban protection settings.
+     the allowed browser origins (CORS), and the rate-limit / auth-ban settings.
   3. Writes them to .env (which is gitignored, never committed).
   4. Prints a summary including the local URL and the values entered.
   5. Starts the server (unless --no-start is passed).
@@ -129,6 +129,13 @@ DEFAULT_TEACHER_KEY="$(read_secret "DEFAULT_TEACHER_KEY (global teacher portal k
 DOWNLOAD_TOKEN="$(read_secret "DOWNLOAD_TOKEN" "$(env_default DOWNLOAD_TOKEN "")")"
 
 echo
+echo "Allowed browser origins (CORS). Comma-separated; press Enter to accept the default."
+echo "Include every origin the client is served from. For a custom-domain GitHub Pages"
+echo "site, list both the custom domain (with and without www) and the *.github.io host."
+DEFAULT_ALLOWED_ORIGINS="http://localhost:4000,http://127.0.0.1:4000,https://billmongan.com,https://www.billmongan.com,https://billjr99.github.io"
+ALLOWED_ORIGINS="$(prompt_with_default "ALLOWED_ORIGINS" "$(env_default ALLOWED_ORIGINS "$DEFAULT_ALLOWED_ORIGINS")")"
+
+echo
 echo "Protection settings (press Enter to accept defaults):"
 PORT="$(prompt_with_default "PORT" "$(env_default PORT 8000)")"
 AUTH_FAILURE_LIMIT="$(prompt_with_default "AUTH_FAILURE_LIMIT (failures before a temporary ban)" "$(env_default AUTH_FAILURE_LIMIT 5)")"
@@ -145,6 +152,7 @@ cat > "$ENV_FILE" <<ENV
 ADMIN_PASSWORD=$ADMIN_PASSWORD
 DEFAULT_TEACHER_KEY=$DEFAULT_TEACHER_KEY
 DOWNLOAD_TOKEN=$DOWNLOAD_TOKEN
+ALLOWED_ORIGINS=$ALLOWED_ORIGINS
 PORT=$PORT
 AUTH_FAILURE_LIMIT=$AUTH_FAILURE_LIMIT
 AUTH_FAILURE_WINDOW_MINUTES=$AUTH_FAILURE_WINDOW_MINUTES
@@ -162,12 +170,22 @@ echo "Wrote $ENV_FILE."
 echo
 echo "================ Local server summary ================"
 echo "Local URL:           http://localhost:$PORT"
+echo "ALLOWED_ORIGINS:     $ALLOWED_ORIGINS"
 echo "ADMIN_PASSWORD:      $ADMIN_PASSWORD"
 echo "DEFAULT_TEACHER_KEY: $DEFAULT_TEACHER_KEY"
 echo "DOWNLOAD_TOKEN:      $DOWNLOAD_TOKEN"
 echo "AUTH_FAILURE_LIMIT / WINDOW_MINUTES: $AUTH_FAILURE_LIMIT / $AUTH_FAILURE_WINDOW_MINUTES"
 echo "AUTH bans (admin days / teacher min / student min): $AUTH_ADMIN_BAN_DAYS / $AUTH_TEACHER_BAN_MINUTES / $AUTH_STUDENT_BAN_MINUTES"
 echo "RATE_LIMIT per second / minute / day: $RATE_LIMIT_MAX_PER_SECOND / $RATE_LIMIT_MAX_PER_MINUTE / $RATE_LIMIT_MAX_PER_DAY"
+echo "--- full effective config (config.yaml merged with .env) ---"
+node -e "
+const { loadConfig } = require('./src/config.js');
+const c = loadConfig();
+for (const key of Object.keys(c)) {
+  const v = c[key];
+  console.log('  ' + key + ': ' + (typeof v === 'object' ? JSON.stringify(v) : v));
+}
+"
 echo "(Values are stored in $ENV_FILE, which is gitignored. Treat this output as sensitive.)"
 echo "====================================================="
 echo

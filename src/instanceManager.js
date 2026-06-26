@@ -251,17 +251,22 @@ async function teacherKeyExists(db, teacherKey) {
 }
 
 async function seedPictures(db) {
+  // Seed the predefined catalog as protected (CUSTOM=0) rows that carry their full
+  // spec, so the Node DB self-seeds identically to the D1 migration
+  // (migrations/0003_seed_picture_specs.sql). SCRIPT points at the server spec.js
+  // endpoint; the client loads predefined and custom pictures the same way.
   for (const picture of PICTURES) {
     await run(
       db,
-      `INSERT INTO PICTURES (ID, TITLE, SCRIPT, ENABLED)
-       VALUES (?, ?, ?, 1)
+      `INSERT INTO PICTURES (ID, TITLE, SCRIPT, ENABLED, CUSTOM, SPEC_JSON)
+       VALUES (?, ?, ?, 1, 0, ?)
        ON CONFLICT(ID) DO UPDATE SET
          TITLE = excluded.TITLE,
          SCRIPT = excluded.SCRIPT,
          ENABLED = 1,
-         CUSTOM = 0`,
-      [picture.id, picture.title, picture.script]
+         CUSTOM = 0,
+         SPEC_JSON = excluded.SPEC_JSON`,
+      [picture.id, picture.title, picture.script, JSON.stringify(picture.spec)]
     );
   }
 }
@@ -287,7 +292,22 @@ async function seedDemoInstances(db) {
 }
 
 async function listPictures(db) {
-  return all(db, "SELECT ID as id, TITLE as title, SCRIPT as script, CUSTOM as custom FROM PICTURES WHERE ENABLED = 1 ORDER BY TITLE ASC");
+  // Include grid dimensions (parsed in JS for node-sqlite/D1 portability) so the
+  // client's create/admin menus can show sizes without fetching each spec.
+  const rows = await all(db, "SELECT ID as id, TITLE as title, SCRIPT as script, CUSTOM as custom, SPEC_JSON as specJson FROM PICTURES WHERE ENABLED = 1 ORDER BY TITLE ASC");
+  return rows.map((row) => {
+    const result = { id: row.id, title: row.title, script: row.script, custom: row.custom };
+    if (row.specJson) {
+      try {
+        const spec = JSON.parse(row.specJson);
+        result.numRows = Number(spec.numRows) || 0;
+        result.numCols = Number(spec.numCols) || 0;
+      } catch (err) {
+        // Leave dims unset if SPEC_JSON is somehow malformed.
+      }
+    }
+    return result;
+  });
 }
 
 async function getPicture(db, pictureId) {
@@ -321,24 +341,30 @@ async function createCustomPicture(db, input) {
   return { id, title, script, custom: 1, spec, artifacts };
 }
 
-async function customPictureSpecJs(db, pictureId) {
+// Serve spec.js for ANY enabled picture that has a stored spec — predefined
+// (CUSTOM=0) and custom (CUSTOM=1) alike. Predefined pictures are seeded with
+// SPEC_JSON and no ARTIFACTS_JSON; artifacts for them are generated on demand below.
+async function pictureSpecJs(db, pictureId) {
   const picture = await getPicture(db, pictureId);
-  if (!picture || !picture.custom || !picture.specJson) {
-    const err = new Error("Custom picture not found");
+  if (!picture || !picture.specJson) {
+    const err = new Error("Picture not found");
     err.status = 404;
     throw err;
   }
   return specToJs(JSON.parse(picture.specJson));
 }
 
-async function customPictureArtifacts(db, pictureId) {
+async function pictureArtifacts(db, pictureId) {
   const picture = await getPicture(db, pictureId);
-  if (!picture || !picture.custom || !picture.artifactsJson) {
-    const err = new Error("Custom picture not found");
+  if (!picture || (!picture.artifactsJson && !picture.specJson)) {
+    const err = new Error("Picture not found");
     err.status = 404;
     throw err;
   }
-  return { title: picture.title, artifacts: JSON.parse(picture.artifactsJson) };
+  const artifacts = picture.artifactsJson
+    ? JSON.parse(picture.artifactsJson)
+    : generateArtifacts(picture.title, JSON.parse(picture.specJson));
+  return { title: picture.title, artifacts };
 }
 
 async function createInstance(db, input, config) {
@@ -472,8 +498,8 @@ module.exports = {
   listPictures,
   getPicture,
   createCustomPicture,
-  customPictureSpecJs,
-  customPictureArtifacts,
+  pictureSpecJs,
+  pictureArtifacts,
   ensureTeacherKey,
   listTeacherKeys,
   createTeacherKey,
