@@ -547,6 +547,28 @@ export default {
       return json(request, env, { instances });
     }
 
+    if (url.pathname === "/download" && request.method === "GET") {
+      await ensurePictures(env);
+      const passwordError = await adminPasswordError(request, env, url);
+      if (passwordError) return passwordError;
+      // Full export gated on the admin password: instances (with their class/admin/
+      // teacher keys), replay data, global teacher keys, and custom pictures.
+      const [instances, data, teacherKeys, customPictures] = await Promise.all([
+        env.DB.prepare("SELECT * FROM INSTANCES ORDER BY ID ASC").all<any>(),
+        env.DB.prepare("SELECT * FROM DATA ORDER BY TIMESTAMP ASC, ID ASC").all<any>(),
+        env.DB.prepare("SELECT * FROM TEACHER_KEYS ORDER BY ID ASC").all<any>(),
+        env.DB.prepare("SELECT * FROM PICTURES WHERE CUSTOM = 1 ORDER BY ID ASC").all<any>()
+      ]);
+      return json(request, env, {
+        exportedAt: new Date().toISOString(),
+        version: APP_VERSION,
+        instances: instances.results || [],
+        data: data.results || [],
+        teacherKeys: teacherKeys.results || [],
+        customPictures: customPictures.results || []
+      }, { headers: { "content-disposition": "attachment; filename=\"data-export.json\"" } });
+    }
+
     if (url.pathname === "/teacher/validate" && request.method === "GET") {
       await ensurePictures(env);
       const portal = await teacherPortalAccess(request, env, url);

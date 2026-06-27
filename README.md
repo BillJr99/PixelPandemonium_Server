@@ -651,7 +651,7 @@ curl "http://localhost:8000/instance/INSTANCE-CODE/admin?admin=ADMIN-CODE&teache
 
 Returns instance metadata plus replay rows. This is used by `admin.html`.
 
-### Download all replay data
+### Download a full data export
 
 ```bash
 curl "http://localhost:8000/download" \
@@ -659,11 +659,14 @@ curl "http://localhost:8000/download" \
   -H 'Origin: http://localhost:4000' -o data-export.json
 ```
 
-Returns a JSON export of every replay row across all instances, as a
-`data-export.json` attachment. It is gated on the admin password (the same
-credential as the admin dashboard), supplied via the `X-Admin-Password` header or
-an `adminPassword` query parameter. The "Download All Data" button on `admin.html`
-calls this endpoint.
+Returns a JSON export of the whole server as a `data-export.json` attachment:
+`instances` (with their class/admin/teacher keys), `data` (all replay rows),
+`teacherKeys` (global teacher keys, including the default), and `customPictures`
+(seeded pictures are reproducible and omitted), plus `exportedAt` and `version`.
+It is gated on the admin password (the same credential as the admin dashboard),
+supplied via the `X-Admin-Password` header or an `adminPassword` query parameter.
+Implemented on both the Node server and the Cloudflare Worker. The "Download All
+Data" button on `admin.html` calls this endpoint.
 
 ### List active instances
 

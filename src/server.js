@@ -936,12 +936,26 @@ app.get("/download", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
-    // The full data export is gated on the admin password (same credential as the
-    // admin dashboard); supply it via X-Admin-Password header or ?adminPassword=.
+    // The full export is gated on the admin password (same credential as the admin
+    // dashboard); supply it via X-Admin-Password header or ?adminPassword=. It
+    // includes instances (with their class/admin/teacher keys), replay data, global
+    // teacher keys, and custom pictures (seeded pictures are reproducible).
     await requireAdminPassword(db, req);
-    const rows = await all(db, "SELECT * FROM DATA ORDER BY TIMESTAMP ASC, ID ASC");
+    const [instances, data, teacherKeys, customPictures] = await Promise.all([
+      all(db, "SELECT * FROM INSTANCES ORDER BY ID ASC"),
+      all(db, "SELECT * FROM DATA ORDER BY TIMESTAMP ASC, ID ASC"),
+      all(db, "SELECT * FROM TEACHER_KEYS ORDER BY ID ASC"),
+      all(db, "SELECT * FROM PICTURES WHERE CUSTOM = 1 ORDER BY ID ASC")
+    ]);
     res.setHeader("content-disposition", "attachment; filename=\"data-export.json\"");
-    res.json(rows);
+    res.json({
+      exportedAt: new Date().toISOString(),
+      version: APP_VERSION,
+      instances,
+      data,
+      teacherKeys,
+      customPictures
+    });
   } catch (err) {
     errorResponse(req, res, err);
   } finally {
