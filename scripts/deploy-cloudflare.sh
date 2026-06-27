@@ -19,7 +19,9 @@ Usage: ./scripts/deploy-cloudflare.sh [--skip-login] [--destroy]
 
 Guides a Cloudflare deployment:
   1. Checks local tools and installs npm dependencies if needed.
-  2. Logs in to Cloudflare with Wrangler unless --skip-login is passed.
+  2. Reuses an existing Cloudflare login if one is cached (offering a menu to keep
+     it or re-login), otherwise runs `wrangler login`. --skip-login trusts the
+     cached credentials without prompting.
   3. If the Worker and/or D1 database already exist, prompts whether to destroy
      and recreate each before deploying.
   4. Prompts for Worker client URL and allowed origins.
@@ -231,6 +233,62 @@ select_cloudflare_account() {
   local selected_index=$((choice - 1))
   export CLOUDFLARE_ACCOUNT_ID="${ids[$selected_index]}"
   echo "Deploying to: ${names[$selected_index]} ($CLOUDFLARE_ACCOUNT_ID)"
+}
+
+# Decide how to authenticate with Cloudflare. Wrangler caches OAuth credentials in
+# ~/.config/.wrangler (outside this repo), so a previous login usually still works.
+# With --skip-login we trust that cache silently. Otherwise we probe `wrangler whoami`:
+# if a login already exists, a menu offers keeping it or doing a manual re-login; if
+# none exists (or the user chooses re-login), we fall back to `wrangler login`.
+ensure_cloudflare_login() {
+  if [ "$SKIP_LOGIN" -eq 1 ]; then
+    echo
+    echo "Skipping Wrangler login because --skip-login was provided (using any cached credentials)."
+    return
+  fi
+
+  echo
+  echo "Checking for an existing Cloudflare login (wrangler whoami)..."
+  local whoami_file
+  whoami_file="$(mktemp)"
+  if wrangler whoami >"$whoami_file" 2>&1 \
+      && grep -qiE "You are logged in|associated with the email|Account Name|Account ID" "$whoami_file"; then
+    echo "An existing Cloudflare login was found:"
+    local email_line
+    email_line="$(grep -iE "associated with the email" "$whoami_file" | head -n 1 || true)"
+    if [ -n "$email_line" ]; then
+      echo "  ${email_line#*]}"
+    fi
+    rm -f "$whoami_file"
+    echo "  1) Keep this login (default)"
+    echo "  2) Log out and re-login manually"
+    local choice
+    while true; do
+      printf '%s' "Select [1]: " >&2
+      read -r choice
+      choice="${choice:-1}"
+      case "$choice" in
+        1)
+          echo "Keeping the existing Cloudflare login."
+          return
+          ;;
+        2)
+          echo "Re-authenticating with Cloudflare. Complete the browser login if prompted."
+          wrangler logout >/dev/null 2>&1 || true
+          wrangler login
+          return
+          ;;
+        *)
+          echo "Enter 1 or 2." >&2
+          ;;
+      esac
+    done
+  fi
+
+  rm -f "$whoami_file"
+  echo "No existing Cloudflare login found."
+  echo "Opening Cloudflare login with Wrangler. Complete the browser login if prompted."
+  wrangler login
 }
 
 json_value() {
@@ -532,14 +590,7 @@ fi
 echo "This script will configure Cloudflare, apply remote D1 migrations, and deploy the Worker."
 echo "It will update $WRANGLER_CONFIG, but it will not write secret values to repo files."
 
-if [ "$SKIP_LOGIN" -eq 0 ]; then
-  echo
-  echo "Opening Cloudflare login with Wrangler. Complete the browser login if prompted."
-  wrangler login
-else
-  echo
-  echo "Skipping Wrangler login because --skip-login was provided."
-fi
+ensure_cloudflare_login
 
 select_cloudflare_account
 
