@@ -15,7 +15,8 @@ Usage: ./scripts/deploy-local.sh [--no-start]
 Configures and runs the local (Node + Faye) server:
   1. Checks local tools and installs npm dependencies if needed.
   2. Prompts for the default admin password, global teacher key, download token,
-     the allowed browser origins (CORS), and the rate-limit / auth-ban settings.
+     and the allowed browser origins (CORS). Advanced tuning (port, rate limits,
+     auth-ban thresholds) is offered behind a single y/N (default N) menu.
   3. Writes them to .env (which is gitignored, never committed).
   4. Prints a summary including the local URL and the values entered.
   5. Starts the server (unless --no-start is passed).
@@ -136,16 +137,33 @@ DEFAULT_ALLOWED_ORIGINS="http://localhost:4000,http://127.0.0.1:4000,https://bil
 ALLOWED_ORIGINS="$(prompt_with_default "ALLOWED_ORIGINS" "$(env_default ALLOWED_ORIGINS "$DEFAULT_ALLOWED_ORIGINS")")"
 
 echo
-echo "Protection settings (press Enter to accept defaults):"
-PORT="$(prompt_with_default "PORT" "$(env_default PORT 8000)")"
-AUTH_FAILURE_LIMIT="$(prompt_with_default "AUTH_FAILURE_LIMIT (failures before a temporary ban)" "$(env_default AUTH_FAILURE_LIMIT 5)")"
-AUTH_FAILURE_WINDOW_MINUTES="$(prompt_with_default "AUTH_FAILURE_WINDOW_MINUTES (window for counting failures)" "$(env_default AUTH_FAILURE_WINDOW_MINUTES 10)")"
-AUTH_ADMIN_BAN_DAYS="$(prompt_with_default "AUTH_ADMIN_BAN_DAYS" "$(env_default AUTH_ADMIN_BAN_DAYS 1)")"
-AUTH_TEACHER_BAN_MINUTES="$(prompt_with_default "AUTH_TEACHER_BAN_MINUTES" "$(env_default AUTH_TEACHER_BAN_MINUTES 10)")"
-AUTH_STUDENT_BAN_MINUTES="$(prompt_with_default "AUTH_STUDENT_BAN_MINUTES" "$(env_default AUTH_STUDENT_BAN_MINUTES 10)")"
-RATE_LIMIT_MAX_PER_SECOND="$(prompt_with_default "RATE_LIMIT_MAX_PER_SECOND" "$(env_default RATE_LIMIT_MAX_PER_SECOND 3)")"
-RATE_LIMIT_MAX_PER_MINUTE="$(prompt_with_default "RATE_LIMIT_MAX_PER_MINUTE" "$(env_default RATE_LIMIT_MAX_PER_MINUTE 20)")"
-RATE_LIMIT_MAX_PER_DAY="$(prompt_with_default "RATE_LIMIT_MAX_PER_DAY" "$(env_default RATE_LIMIT_MAX_PER_DAY 10000)")"
+# Advanced tuning (port, rate limits, auth-ban thresholds) has sensible defaults
+# and rarely changes, so it is hidden behind a single y/N (default N) prompt instead
+# of asking about each value every run. Saying no keeps the current .env / default
+# values. Start from the existing .env value (or the default) for each.
+PORT="$(env_default PORT 8000)"
+AUTH_FAILURE_LIMIT="$(env_default AUTH_FAILURE_LIMIT 5)"
+AUTH_FAILURE_WINDOW_MINUTES="$(env_default AUTH_FAILURE_WINDOW_MINUTES 10)"
+AUTH_ADMIN_BAN_DAYS="$(env_default AUTH_ADMIN_BAN_DAYS 1)"
+AUTH_TEACHER_BAN_MINUTES="$(env_default AUTH_TEACHER_BAN_MINUTES 10)"
+AUTH_STUDENT_BAN_MINUTES="$(env_default AUTH_STUDENT_BAN_MINUTES 10)"
+RATE_LIMIT_MAX_PER_SECOND="$(env_default RATE_LIMIT_MAX_PER_SECOND 10)"
+RATE_LIMIT_MAX_PER_MINUTE="$(env_default RATE_LIMIT_MAX_PER_MINUTE 60)"
+RATE_LIMIT_MAX_PER_DAY="$(env_default RATE_LIMIT_MAX_PER_DAY 10000)"
+
+if confirm "See and edit advanced tuning (port, rate limits, auth-ban thresholds)?"; then
+  PORT="$(prompt_with_default "PORT" "$PORT")"
+  AUTH_FAILURE_LIMIT="$(prompt_with_default "AUTH_FAILURE_LIMIT (failures before a temporary ban)" "$AUTH_FAILURE_LIMIT")"
+  AUTH_FAILURE_WINDOW_MINUTES="$(prompt_with_default "AUTH_FAILURE_WINDOW_MINUTES (window for counting failures)" "$AUTH_FAILURE_WINDOW_MINUTES")"
+  AUTH_ADMIN_BAN_DAYS="$(prompt_with_default "AUTH_ADMIN_BAN_DAYS" "$AUTH_ADMIN_BAN_DAYS")"
+  AUTH_TEACHER_BAN_MINUTES="$(prompt_with_default "AUTH_TEACHER_BAN_MINUTES" "$AUTH_TEACHER_BAN_MINUTES")"
+  AUTH_STUDENT_BAN_MINUTES="$(prompt_with_default "AUTH_STUDENT_BAN_MINUTES" "$AUTH_STUDENT_BAN_MINUTES")"
+  RATE_LIMIT_MAX_PER_SECOND="$(prompt_with_default "RATE_LIMIT_MAX_PER_SECOND" "$RATE_LIMIT_MAX_PER_SECOND")"
+  RATE_LIMIT_MAX_PER_MINUTE="$(prompt_with_default "RATE_LIMIT_MAX_PER_MINUTE" "$RATE_LIMIT_MAX_PER_MINUTE")"
+  RATE_LIMIT_MAX_PER_DAY="$(prompt_with_default "RATE_LIMIT_MAX_PER_DAY" "$RATE_LIMIT_MAX_PER_DAY")"
+else
+  echo "Keeping current tuning (rate limits per s/m/d: $RATE_LIMIT_MAX_PER_SECOND/$RATE_LIMIT_MAX_PER_MINUTE/$RATE_LIMIT_MAX_PER_DAY; PORT $PORT)."
+fi
 
 umask 077
 cat > "$ENV_FILE" <<ENV

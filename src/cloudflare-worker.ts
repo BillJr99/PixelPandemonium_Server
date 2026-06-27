@@ -130,8 +130,8 @@ async function rateLimitResponse(request: Request, env: Env): Promise<Response |
     method: "POST",
     body: JSON.stringify({
       now: Date.now(),
-      second: positiveInt(env.RATE_LIMIT_MAX_PER_SECOND, 3),
-      minute: positiveInt(env.RATE_LIMIT_MAX_PER_MINUTE, 20),
+      second: positiveInt(env.RATE_LIMIT_MAX_PER_SECOND, 10),
+      minute: positiveInt(env.RATE_LIMIT_MAX_PER_MINUTE, 60),
       day: positiveInt(env.RATE_LIMIT_MAX_PER_DAY, 10000)
     })
   });

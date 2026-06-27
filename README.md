@@ -179,8 +179,8 @@ AUTH_FAILURE_WINDOW_MINUTES=10
 AUTH_ADMIN_BAN_DAYS=1
 AUTH_TEACHER_BAN_MINUTES=10
 AUTH_STUDENT_BAN_MINUTES=10
-RATE_LIMIT_MAX_PER_SECOND=3
-RATE_LIMIT_MAX_PER_MINUTE=20
+RATE_LIMIT_MAX_PER_SECOND=10
+RATE_LIMIT_MAX_PER_MINUTE=60
 RATE_LIMIT_MAX_PER_DAY=10000
 LEGACY_ROUTES_ENABLED=false
 ```
@@ -202,9 +202,9 @@ Change production secret values before public deployment:
 - `AUTH_TEACHER_BAN_MINUTES`: minutes to ban an IP after too many teacher key failures. Default: `10`.
 - `AUTH_STUDENT_BAN_MINUTES`: minutes to ban an IP after too many student class-key failures. Default: `10`.
 - `RATE_LIMIT_MAX_PER_SECOND`: short request burst allowed from one IP. Default:
-  `3`, enough for fast clicking but low enough to stop simple automation.
+  `10`, enough for fast clicking but low enough to stop simple automation.
 - `RATE_LIMIT_MAX_PER_MINUTE`: sustained requests allowed from one IP.
-  Default: `20`.
+  Default: `60`.
 - `RATE_LIMIT_MAX_PER_DAY`: daily requests allowed from one IP. Default:
   `10000`, intentionally high enough for classrooms sharing one school NAT IP.
 - `LEGACY_ROUTES_ENABLED`: enables old `/insert` and `/retrieve` routes.
@@ -442,8 +442,8 @@ AUTH_FAILURE_WINDOW_MINUTES=10
 AUTH_ADMIN_BAN_DAYS=1
 AUTH_TEACHER_BAN_MINUTES=10
 AUTH_STUDENT_BAN_MINUTES=10
-RATE_LIMIT_MAX_PER_SECOND=3
-RATE_LIMIT_MAX_PER_MINUTE=20
+RATE_LIMIT_MAX_PER_SECOND=10
+RATE_LIMIT_MAX_PER_MINUTE=60
 RATE_LIMIT_MAX_PER_DAY=10000
 LEGACY_ROUTES_ENABLED=false
 ```

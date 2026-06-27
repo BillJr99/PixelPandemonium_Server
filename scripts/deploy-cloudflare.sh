@@ -24,7 +24,9 @@ Guides a Cloudflare deployment:
      cached credentials without prompting.
   3. If the Worker and/or D1 database already exist, prompts whether to destroy
      and recreate each before deploying.
-  4. Prompts for Worker client URL and allowed origins.
+  4. Prompts for Worker client URL and allowed origins, then offers an optional
+     (default no) menu to review and edit advanced tuning vars (expiration, rate
+     limits, auth-ban thresholds, legacy routes) stored in wrangler.jsonc.
   5. Creates/configures the D1 database if wrangler.jsonc has no database id.
   6. Sets ADMIN_PASSWORD, DEFAULT_TEACHER_KEY and DOWNLOAD_TOKEN as Cloudflare
      Worker secrets, and caches them in a gitignored .cloudflare-secrets.env so
@@ -347,6 +349,58 @@ fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
 NODE
 }
 
+# Write KEY=VALUE pairs into wrangler.jsonc's vars block, preserving everything else.
+set_worker_vars() {
+  node - "$@" <<'NODE'
+const fs = require("fs");
+const path = "wrangler.jsonc";
+const config = JSON.parse(fs.readFileSync(path, "utf8"));
+config.vars = config.vars || {};
+for (const pair of process.argv.slice(2)) {
+  const idx = pair.indexOf("=");
+  if (idx === -1) continue;
+  config.vars[pair.slice(0, idx)] = pair.slice(idx + 1);
+}
+fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+}
+
+# These tuning vars (expiration, rate limits, auth-ban thresholds, legacy routes)
+# have sensible defaults and rarely change, so we don't ask about each one every
+# deploy. A single y/N (default N) prompt offers to review and edit them; saying no
+# keeps whatever is already in wrangler.jsonc.
+prompt_advanced_worker_vars() {
+  echo
+  if ! confirm "See and edit advanced Worker tuning (expiration, rate limits, auth bans, legacy routes)?"; then
+    echo "Keeping current advanced Worker vars from $WRANGLER_CONFIG (rate limits per s/m/d: $(json_value 'config.vars && config.vars.RATE_LIMIT_MAX_PER_SECOND')/$(json_value 'config.vars && config.vars.RATE_LIMIT_MAX_PER_MINUTE')/$(json_value 'config.vars && config.vars.RATE_LIMIT_MAX_PER_DAY'))."
+    return
+  fi
+  local default_expiration_hours rate_per_second rate_per_minute rate_per_day
+  local auth_failure_limit auth_failure_window admin_ban teacher_ban student_ban legacy_routes
+  default_expiration_hours="$(prompt_with_default "DEFAULT_EXPIRATION_HOURS" "$(json_value 'config.vars && config.vars.DEFAULT_EXPIRATION_HOURS')")"
+  rate_per_second="$(prompt_with_default "RATE_LIMIT_MAX_PER_SECOND" "$(json_value 'config.vars && config.vars.RATE_LIMIT_MAX_PER_SECOND')")"
+  rate_per_minute="$(prompt_with_default "RATE_LIMIT_MAX_PER_MINUTE" "$(json_value 'config.vars && config.vars.RATE_LIMIT_MAX_PER_MINUTE')")"
+  rate_per_day="$(prompt_with_default "RATE_LIMIT_MAX_PER_DAY" "$(json_value 'config.vars && config.vars.RATE_LIMIT_MAX_PER_DAY')")"
+  auth_failure_limit="$(prompt_with_default "AUTH_FAILURE_LIMIT" "$(json_value 'config.vars && config.vars.AUTH_FAILURE_LIMIT')")"
+  auth_failure_window="$(prompt_with_default "AUTH_FAILURE_WINDOW_MINUTES" "$(json_value 'config.vars && config.vars.AUTH_FAILURE_WINDOW_MINUTES')")"
+  admin_ban="$(prompt_with_default "AUTH_ADMIN_BAN_DAYS" "$(json_value 'config.vars && config.vars.AUTH_ADMIN_BAN_DAYS')")"
+  teacher_ban="$(prompt_with_default "AUTH_TEACHER_BAN_MINUTES" "$(json_value 'config.vars && config.vars.AUTH_TEACHER_BAN_MINUTES')")"
+  student_ban="$(prompt_with_default "AUTH_STUDENT_BAN_MINUTES" "$(json_value 'config.vars && config.vars.AUTH_STUDENT_BAN_MINUTES')")"
+  legacy_routes="$(prompt_with_default "LEGACY_ROUTES_ENABLED (true/false)" "$(json_value 'config.vars && config.vars.LEGACY_ROUTES_ENABLED')")"
+  set_worker_vars \
+    "DEFAULT_EXPIRATION_HOURS=$default_expiration_hours" \
+    "RATE_LIMIT_MAX_PER_SECOND=$rate_per_second" \
+    "RATE_LIMIT_MAX_PER_MINUTE=$rate_per_minute" \
+    "RATE_LIMIT_MAX_PER_DAY=$rate_per_day" \
+    "AUTH_FAILURE_LIMIT=$auth_failure_limit" \
+    "AUTH_FAILURE_WINDOW_MINUTES=$auth_failure_window" \
+    "AUTH_ADMIN_BAN_DAYS=$admin_ban" \
+    "AUTH_TEACHER_BAN_MINUTES=$teacher_ban" \
+    "AUTH_STUDENT_BAN_MINUTES=$student_ban" \
+    "LEGACY_ROUTES_ENABLED=$legacy_routes"
+  echo "Updated advanced Worker vars in $WRANGLER_CONFIG."
+}
+
 extract_database_id() {
   local file="$1"
   node - "$file" <<'NODE'
@@ -620,6 +674,8 @@ if [ -z "$client_base_url" ] || [ -z "$allowed_origins" ]; then
   echo "Client base URL and allowed origins are required." >&2
   exit 1
 fi
+
+prompt_advanced_worker_vars
 
 database_id="$current_database_id"
 # If wrangler.jsonc has a real database id but the database no longer exists in
