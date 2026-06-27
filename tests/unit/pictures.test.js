@@ -98,12 +98,24 @@ async function startServer(t) {
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"]
   });
+  // Guard against a late child log line arriving after the stream is torn down,
+  // which would otherwise throw ERR_STREAM_WRITE_AFTER_END as an uncaught exception.
+  logStream.on("error", () => {});
   child.stdout.pipe(logStream);
   child.stderr.pipe(logStream);
   t.after(async () => {
-    if (child.exitCode === null) child.kill();
+    // Detach the pipes and wait for the child to actually exit before ending the log
+    // stream, so no buffered child output can write to an already-ended stream.
+    child.stdout.unpipe(logStream);
+    child.stderr.unpipe(logStream);
+    if (child.exitCode === null) {
+      await new Promise((resolve) => {
+        child.once("exit", resolve);
+        child.kill();
+        setTimeout(resolve, 2000);
+      });
+    }
     logStream.end();
-    await delay(100);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
