@@ -59,7 +59,6 @@ async function startServer(t, envLines) {
   fs.writeFileSync(path.join(dir, ".env"), [
     "ADMIN_PASSWORD=admin",
     "DEFAULT_TEACHER_KEY=teacher",
-    "DOWNLOAD_TOKEN=change-me-before-deploying",
     "AUTH_FAILURE_LIMIT=5",
     "AUTH_FAILURE_WINDOW_MINUTES=10",
     "AUTH_ADMIN_BAN_DAYS=1",

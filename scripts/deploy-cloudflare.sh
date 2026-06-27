@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 
 SKIP_LOGIN=0
 DESTROY=0
+REPORT_ONLY=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -13,9 +14,12 @@ for arg in "$@"; do
     --destroy)
       DESTROY=1
       ;;
+    --report-only)
+      REPORT_ONLY=1
+      ;;
     -h|--help)
       cat <<'USAGE'
-Usage: ./scripts/deploy-cloudflare.sh [--skip-login] [--destroy]
+Usage: ./scripts/deploy-cloudflare.sh [--skip-login] [--destroy] [--report-only]
 
 Guides a Cloudflare deployment:
   1. Checks local tools and installs npm dependencies if needed.
@@ -28,16 +32,21 @@ Guides a Cloudflare deployment:
      (default no) menu to review and edit advanced tuning vars (expiration, rate
      limits, auth-ban thresholds, legacy routes) stored in wrangler.jsonc.
   5. Creates/configures the D1 database if wrangler.jsonc has no database id.
-  6. Sets ADMIN_PASSWORD, DEFAULT_TEACHER_KEY and DOWNLOAD_TOKEN as Cloudflare
-     Worker secrets, and caches them in a gitignored .cloudflare-secrets.env so
-     they can be shown on every deploy (press Enter to keep the cached value).
+  6. Sets ADMIN_PASSWORD and DEFAULT_TEACHER_KEY as Cloudflare Worker secrets, and
+     caches them in a gitignored .cloudflare-secrets.env so they can be shown on
+     every deploy (press Enter to keep the cached value).
   7. Applies remote D1 migrations.
   8. Deploys the Worker.
   9. Prints the Worker URL and the resolved environment values, including the
-     ADMIN_PASSWORD / DEFAULT_TEACHER_KEY / DOWNLOAD_TOKEN values.
+     ADMIN_PASSWORD / DEFAULT_TEACHER_KEY values.
 
 With --destroy, the script logs in, asks for explicit confirmation, then deletes
 the Worker and D1 database named in wrangler.jsonc instead of deploying.
+
+With --report-only, the script logs in (or keeps/selects an existing login and
+account) exactly as usual, then does no deployment or configuration: it skips
+straight to printing the report (Worker name, vars, D1 database, and the cached
+secrets) and quits.
 
 Secret values are cached in a gitignored .cloudflare-secrets.env (never committed)
 and printed in the terminal summary, so run it somewhere private. Cloudflare Worker
@@ -306,9 +315,9 @@ else console.log(String(value));
 }
 
 # Print every non-secret var that will be deployed to the Worker, so the final
-# installation can be audited. Secrets (ADMIN_PASSWORD/DEFAULT_TEACHER_KEY/
-# DOWNLOAD_TOKEN) are stored as Cloudflare secrets and removed from vars, so they
-# never appear here; they are summarized separately below.
+# installation can be audited. Secrets (ADMIN_PASSWORD/DEFAULT_TEACHER_KEY) are
+# stored as Cloudflare secrets and removed from vars, so they never appear here;
+# they are summarized separately below.
 print_worker_vars() {
   node -e "
 const fs = require('fs');
@@ -335,7 +344,6 @@ config.vars.ALLOWED_ORIGINS = allowedOrigins;
 config.vars.CLIENT_BASE_URL = clientBaseUrl;
 delete config.vars.ADMIN_PASSWORD;
 delete config.vars.DEFAULT_TEACHER_KEY;
-delete config.vars.DOWNLOAD_TOKEN;
 
 if (databaseId) {
   const databases = config.d1_databases || [];
@@ -701,7 +709,7 @@ if [ ! -f "$WRANGLER_CONFIG" ]; then
   exit 1
 fi
 
-if [ ! -d node_modules ]; then
+if [ "$REPORT_ONLY" -eq 0 ] && [ ! -d node_modules ]; then
   echo "node_modules is missing."
   if confirm "Run npm install now?"; then
     npm install
@@ -711,8 +719,12 @@ if [ ! -d node_modules ]; then
   fi
 fi
 
-echo "This script will configure Cloudflare, apply remote D1 migrations, and deploy the Worker."
-echo "It will update $WRANGLER_CONFIG, but it will not write secret values to repo files."
+if [ "$REPORT_ONLY" -eq 1 ]; then
+  echo "Report-only mode: logging in to read the current configuration; nothing will be deployed or changed."
+else
+  echo "This script will configure Cloudflare, apply remote D1 migrations, and deploy the Worker."
+  echo "It will update $WRANGLER_CONFIG, but it will not write secret values to repo files."
+fi
 
 ensure_cloudflare_login
 
@@ -726,6 +738,30 @@ if [ -z "$current_database_name" ]; then
   current_database_name="pixel-pandemonium"
 fi
 current_database_id="$(json_value 'config.d1_databases && config.d1_databases[0] && config.d1_databases[0].database_id')"
+
+if [ "$REPORT_ONLY" -eq 1 ]; then
+  report_admin_password="$(cache_get ADMIN_PASSWORD)"
+  report_teacher_key="$(cache_get DEFAULT_TEACHER_KEY)"
+  echo
+  echo "================ Cloudflare report (report-only) ================"
+  echo "Worker name:         $current_worker_name"
+  echo "--- Worker vars (all values from $WRANGLER_CONFIG) ---"
+  print_worker_vars
+  echo "--- D1 database ---"
+  echo "  D1 database name:  $current_database_name"
+  echo "  D1 database id:    $current_database_id"
+  echo "--- secrets (cached locally in $SECRETS_CACHE, gitignored) ---"
+  if [ -n "$report_admin_password$report_teacher_key" ]; then
+    echo "ADMIN_PASSWORD:      $report_admin_password"
+    echo "DEFAULT_TEACHER_KEY: $report_teacher_key"
+    echo "(Treat this terminal output as sensitive.)"
+  else
+    echo "ADMIN_PASSWORD / DEFAULT_TEACHER_KEY: no local cache."
+    echo "(Cloudflare secrets cannot be read back from the API; run a full deploy and set them once to populate $SECRETS_CACHE.)"
+  fi
+  echo "================================================================"
+  exit 0
+fi
 
 if [ "$DESTROY" -eq 1 ]; then
   destroy_cloudflare_resources "$current_worker_name" "$current_database_name" "$current_database_id"
@@ -797,27 +833,23 @@ echo
 echo "Cloudflare Worker secrets (printed in the summary below; cached in $SECRETS_CACHE, gitignored)."
 admin_password="$(cache_get ADMIN_PASSWORD)"
 default_teacher_key="$(cache_get DEFAULT_TEACHER_KEY)"
-download_token="$(cache_get DOWNLOAD_TOKEN)"
 secrets_set=0
-if confirm "Set/keep ADMIN_PASSWORD, DEFAULT_TEACHER_KEY and DOWNLOAD_TOKEN now?"; then
-  admin_password="$(read_secret "ADMIN_PASSWORD (teacher dashboard / admin)" "$admin_password")"
+if confirm "Set/keep ADMIN_PASSWORD and DEFAULT_TEACHER_KEY now?"; then
+  admin_password="$(read_secret "ADMIN_PASSWORD (teacher dashboard / admin / data export)" "$admin_password")"
   default_teacher_key="$(read_secret "DEFAULT_TEACHER_KEY (global teacher portal key)" "$default_teacher_key")"
-  download_token="$(read_secret "DOWNLOAD_TOKEN" "$download_token")"
   printf '%s' "$admin_password" | wrangler secret put ADMIN_PASSWORD
   printf '%s' "$default_teacher_key" | wrangler secret put DEFAULT_TEACHER_KEY
-  printf '%s' "$download_token" | wrangler secret put DOWNLOAD_TOKEN
   umask 077
   {
     printf 'ADMIN_PASSWORD=%s\n' "$admin_password"
     printf 'DEFAULT_TEACHER_KEY=%s\n' "$default_teacher_key"
-    printf 'DOWNLOAD_TOKEN=%s\n' "$download_token"
   } > "$SECRETS_CACHE"
   chmod 600 "$SECRETS_CACHE"
   secrets_set=1
 else
   echo "Skipping secret setup; existing Cloudflare secrets are left unchanged."
   # If we have cached values from a previous run, still show them in the summary.
-  [ -n "$admin_password$default_teacher_key$download_token" ] && secrets_set=1
+  [ -n "$admin_password$default_teacher_key" ] && secrets_set=1
 fi
 
 echo
@@ -861,15 +893,13 @@ echo "--- secrets (stored as Cloudflare Worker secrets; cached locally in $SECRE
 if [ "$secrets_set" -eq 1 ]; then
   echo "ADMIN_PASSWORD:      $admin_password"
   echo "DEFAULT_TEACHER_KEY: $default_teacher_key"
-  echo "DOWNLOAD_TOKEN:      $download_token"
   echo "(Treat this terminal output as sensitive.)"
 else
-  echo "ADMIN_PASSWORD / DEFAULT_TEACHER_KEY / DOWNLOAD_TOKEN: not set this run and no local cache."
+  echo "ADMIN_PASSWORD / DEFAULT_TEACHER_KEY: not set this run and no local cache."
   echo "(Cloudflare secrets cannot be read back from the API; set them once to populate the local cache, then they print on every deploy.)"
 fi
 echo "==================================================="
 unset admin_password
 unset default_teacher_key
-unset download_token
 echo
 echo "Update the static client config so server_url and realtime_url point to the Worker URL or custom Worker domain."

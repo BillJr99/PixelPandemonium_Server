@@ -18,7 +18,6 @@ auth_failure_window_minutes: 10
 auth_admin_ban_days: 1
 auth_teacher_ban_minutes: 10
 auth_student_ban_minutes: 10
-download_token: change-me-before-deploying
 legacy_routes_enabled: true
 cloudflare:
   worker_name: pixel-pandemonium-server

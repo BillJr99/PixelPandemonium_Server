@@ -54,14 +54,13 @@ function defaultEnvText() {
   return [
     `ADMIN_PASSWORD=${String(config.admin_password || "admin")}`,
     `DEFAULT_TEACHER_KEY=${String(config.default_teacher_key || "teacher")}`,
-    `DOWNLOAD_TOKEN=${String(config.download_token || "change-me-before-deploying")}`,
     `AUTH_FAILURE_LIMIT=${String(config.auth_failure_limit || 5)}`,
     `AUTH_FAILURE_WINDOW_MINUTES=${String(config.auth_failure_window_minutes || 10)}`,
     "AUTH_ADMIN_BAN_DAYS=1",
     "AUTH_TEACHER_BAN_MINUTES=10",
     "AUTH_STUDENT_BAN_MINUTES=10",
-    "RATE_LIMIT_MAX_PER_SECOND=3",
-    "RATE_LIMIT_MAX_PER_MINUTE=20",
+    "RATE_LIMIT_MAX_PER_SECOND=10",
+    "RATE_LIMIT_MAX_PER_MINUTE=60",
     "RATE_LIMIT_MAX_PER_DAY=10000",
     ""
   ].join("\n");
@@ -80,13 +79,13 @@ function parseEnvText(text) {
 }
 
 async function ensureServerEnv() {
-  const required = ["ADMIN_PASSWORD", "DEFAULT_TEACHER_KEY", "DOWNLOAD_TOKEN", "AUTH_FAILURE_LIMIT", "AUTH_FAILURE_WINDOW_MINUTES"];
+  const required = ["ADMIN_PASSWORD", "DEFAULT_TEACHER_KEY", "AUTH_FAILURE_LIMIT", "AUTH_FAILURE_WINDOW_MINUTES"];
   const defaulted = {
     AUTH_ADMIN_BAN_DAYS: "1",
     AUTH_TEACHER_BAN_MINUTES: "10",
     AUTH_STUDENT_BAN_MINUTES: "10",
-    RATE_LIMIT_MAX_PER_SECOND: "3",
-    RATE_LIMIT_MAX_PER_MINUTE: "20",
+    RATE_LIMIT_MAX_PER_SECOND: "10",
+    RATE_LIMIT_MAX_PER_MINUTE: "60",
     RATE_LIMIT_MAX_PER_DAY: "10000"
   };
   const file = envPath();
@@ -112,11 +111,9 @@ async function ensureServerEnv() {
         ? String(config.admin_password || "admin")
         : key === "DEFAULT_TEACHER_KEY"
           ? String(config.default_teacher_key || "teacher")
-          : key === "DOWNLOAD_TOKEN"
-            ? String(config.download_token || "change-me-before-deploying")
-            : key === "AUTH_FAILURE_LIMIT"
-              ? String(config.auth_failure_limit || 5)
-              : String(config.auth_failure_window_minutes || 10);
+          : key === "AUTH_FAILURE_LIMIT"
+            ? String(config.auth_failure_limit || 5)
+            : String(config.auth_failure_window_minutes || 10);
       next[key] = await ask(key, fallback);
     }
     rl.close();
@@ -148,7 +145,6 @@ function applyEnvText(text) {
     const value = trimmed.slice(index + 1).trim().replace(/^["']|["']$/g, "");
     if (key === "ADMIN_PASSWORD") config.admin_password = value;
     if (key === "DEFAULT_TEACHER_KEY") config.default_teacher_key = value;
-    if (key === "DOWNLOAD_TOKEN") config.download_token = value;
     if (key === "AUTH_FAILURE_LIMIT") config.auth_failure_limit = Number(value);
     if (key === "AUTH_FAILURE_WINDOW_MINUTES") config.auth_failure_window_minutes = Number(value);
     if (key === "AUTH_ADMIN_BAN_DAYS") config.auth_admin_ban_days = Number(value);
@@ -937,13 +933,12 @@ if (config.legacy_routes_enabled) {
 }
 
 app.get("/download", async (req, res) => {
-  const token = (req.get("authorization") || "").replace(/^Bearer\s+/i, "") || req.query.token;
-  if (!config.download_token || token !== config.download_token) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
   const db = openDb();
   try {
     await ensureMigrated(db);
+    // The full data export is gated on the admin password (same credential as the
+    // admin dashboard); supply it via X-Admin-Password header or ?adminPassword=.
+    await requireAdminPassword(db, req);
     const rows = await all(db, "SELECT * FROM DATA ORDER BY TIMESTAMP ASC, ID ASC");
     res.setHeader("content-disposition", "attachment; filename=\"data-export.json\"");
     res.json(rows);

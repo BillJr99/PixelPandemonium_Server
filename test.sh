@@ -15,7 +15,6 @@ ensure_test_env() {
   touch .env
   grep -q '^ADMIN_PASSWORD=' .env || printf 'ADMIN_PASSWORD=%s\n' "$ADMIN_PASSWORD" >>.env
   grep -q '^DEFAULT_TEACHER_KEY=' .env || printf 'DEFAULT_TEACHER_KEY=teacher\n' >>.env
-  grep -q '^DOWNLOAD_TOKEN=' .env || printf 'DOWNLOAD_TOKEN=change-me-before-deploying\n' >>.env
   grep -q '^AUTH_FAILURE_LIMIT=' .env || printf 'AUTH_FAILURE_LIMIT=5\n' >>.env
   grep -q '^AUTH_FAILURE_WINDOW_MINUTES=' .env || printf 'AUTH_FAILURE_WINDOW_MINUTES=10\n' >>.env
   grep -q '^AUTH_ADMIN_BAN_DAYS=' .env || printf 'AUTH_ADMIN_BAN_DAYS=1\n' >>.env

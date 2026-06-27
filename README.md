@@ -54,8 +54,8 @@ deployment:
 The script checks dependencies, runs `wrangler login`, detects whether the
 Worker and D1 database already exist and (on re-deploy) offers to destroy and
 recreate each, prompts for the public client URL and allowed browser origins,
-creates or configures the D1 database, sets `ADMIN_PASSWORD`,
-`DEFAULT_TEACHER_KEY` and `DOWNLOAD_TOKEN` as Cloudflare Worker secrets, applies
+creates or configures the D1 database, sets `ADMIN_PASSWORD` and
+`DEFAULT_TEACHER_KEY` as Cloudflare Worker secrets, applies
 remote D1 migrations, and runs `wrangler deploy`. When it finishes it prints the
 Worker URL and the resolved environment values, including the secret values you
 entered during that run, so run it somewhere private.
@@ -117,7 +117,7 @@ increasing order of priority:
 **Cloudflare Worker** (`wrangler deploy`, `./scripts/deploy-cloudflare.sh`):
 
 1. Non-secret values come from `vars` in `wrangler.jsonc`, applied on each deploy.
-2. Secrets (`ADMIN_PASSWORD`, `DEFAULT_TEACHER_KEY`, `DOWNLOAD_TOKEN`) are stored
+2. Secrets (`ADMIN_PASSWORD`, `DEFAULT_TEACHER_KEY`) are stored
    as Cloudflare Worker secrets by the deploy script, never in a file.
 3. A changed `wrangler.jsonc` takes effect only after a redeploy; a variable set
    directly in the Cloudflare dashboard can diverge from the file until the next
@@ -156,7 +156,6 @@ Edit `config.yaml` and create a local `.env` before running or deploying.
 - `admin_password`: shared admin password, normally loaded from `.env` or the environment.
 - `default_teacher_key`: first global teacher key seeded into the SQLite
   `TEACHER_KEYS` table, normally loaded from `.env` or the environment.
-- `download_token`: bearer/query token for `/download`, loaded from `.env`, the environment, or `config.yaml`.
 - `legacy_routes_enabled`: keeps old `/insert` and `/retrieve` routes available.
 - `cloudflare`: deployment names and D1 database id.
 
@@ -172,7 +171,6 @@ The `.env` format is simple `KEY=value` lines:
 ```bash
 ADMIN_PASSWORD=admin
 DEFAULT_TEACHER_KEY=teacher
-DOWNLOAD_TOKEN=change-me-before-deploying
 ALLOWED_ORIGINS=http://localhost:4000,http://127.0.0.1:4000,https://billmongan.com,https://www.billmongan.com,https://billjr99.github.io
 AUTH_FAILURE_LIMIT=5
 AUTH_FAILURE_WINDOW_MINUTES=10
@@ -192,7 +190,6 @@ Change production secret values before public deployment:
 - `ADMIN_PASSWORD`: the shared password required by teacher/admin APIs.
 - `DEFAULT_TEACHER_KEY`: the default global teacher key seeded into the
   database on every server startup. Local default: `teacher`.
-- `DOWNLOAD_TOKEN`: the bearer/query token required by `/download`.
 - `ALLOWED_ORIGINS`: comma-separated browser origins allowed to call the API
   (CORS). When set, it overrides `allowed_origins` in `config.yaml` for the local
   Node server. See [CORS / Allowed Origins](#cors--allowed-origins).
@@ -279,9 +276,10 @@ seconds apart so the per-IP rate limiter does not answer with `429` first.)
 
 ## Local Run
 
-The guided local script prompts for the default admin password, global teacher
-key, download token, and the rate-limit / auth-ban protection settings, writes
-them to `.env` (which is gitignored), prints a summary, and starts the server:
+The guided local script prompts for the default admin password and global teacher
+key, offers an optional menu for the rate-limit / auth-ban protection settings,
+writes them to `.env` (which is gitignored), prints a summary, and starts the
+server:
 
 ```bash
 ./scripts/deploy-local.sh
@@ -435,7 +433,6 @@ Required local `.env` values:
 ```bash
 ADMIN_PASSWORD=admin
 DEFAULT_TEACHER_KEY=teacher
-DOWNLOAD_TOKEN=change-me-before-deploying
 ALLOWED_ORIGINS=http://localhost:4000,http://127.0.0.1:4000,https://billmongan.com,https://www.billmongan.com,https://billjr99.github.io
 AUTH_FAILURE_LIMIT=5
 AUTH_FAILURE_WINDOW_MINUTES=10
@@ -451,7 +448,6 @@ LEGACY_ROUTES_ENABLED=false
 - `ADMIN_PASSWORD` is the shared login required by teacher/admin APIs.
 - `DEFAULT_TEACHER_KEY` is the first global teacher key, seeded into the
   database on every startup. The local default is `teacher`.
-- `DOWNLOAD_TOKEN` protects the full replay-data export at `/download`.
 - `ALLOWED_ORIGINS` is the comma-separated list of browser origins allowed to
   call the API. When set it overrides `allowed_origins` in `config.yaml`. See
   [CORS / Allowed Origins](#cors--allowed-origins).
@@ -654,6 +650,20 @@ curl "http://localhost:8000/instance/INSTANCE-CODE/admin?admin=ADMIN-CODE&teache
 ```
 
 Returns instance metadata plus replay rows. This is used by `admin.html`.
+
+### Download all replay data
+
+```bash
+curl "http://localhost:8000/download" \
+  -H 'X-Admin-Password: admin' \
+  -H 'Origin: http://localhost:4000' -o data-export.json
+```
+
+Returns a JSON export of every replay row across all instances, as a
+`data-export.json` attachment. It is gated on the admin password (the same
+credential as the admin dashboard), supplied via the `X-Admin-Password` header or
+an `adminPassword` query parameter. The "Download All Data" button on `admin.html`
+calls this endpoint.
 
 ### List active instances
 

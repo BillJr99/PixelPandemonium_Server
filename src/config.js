@@ -19,7 +19,6 @@ const DEFAULTS = {
   auth_student_ban_minutes: 10,
   admin_password: "admin",
   default_teacher_key: "teacher",
-  download_token: "change-me-before-deploying",
   legacy_routes_enabled: true
 };
 
@@ -142,9 +141,6 @@ function loadConfig(configPath = path.join(process.cwd(), "config.yaml")) {
   }
   if (process.env.DEFAULT_TEACHER_KEY) {
     config.default_teacher_key = process.env.DEFAULT_TEACHER_KEY;
-  }
-  if (process.env.DOWNLOAD_TOKEN) {
-    config.download_token = process.env.DOWNLOAD_TOKEN;
   }
   if (process.env.RATE_LIMIT_MAX_PER_SECOND) {
     config.rate_limit_max_per_second = Number(process.env.RATE_LIMIT_MAX_PER_SECOND);

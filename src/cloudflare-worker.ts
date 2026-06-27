@@ -13,7 +13,6 @@ export interface Env {
   RATE_LIMIT_MAX_PER_DAY: string;
   ADMIN_PASSWORD: string;
   DEFAULT_TEACHER_KEY: string;
-  DOWNLOAD_TOKEN: string;
   LEGACY_ROUTES_ENABLED: string;
   AUTH_FAILURE_LIMIT: string;
   AUTH_FAILURE_WINDOW_MINUTES: string;
