@@ -312,6 +312,110 @@ database_exists() {
   wrangler d1 list 2>/dev/null | grep -Fq "$database_name"
 }
 
+# Resolve the real Cloudflare database id for a name by querying the account with
+# `wrangler d1 list --json`. The local wrangler.jsonc binding can still hold the
+# REPLACE_WITH_D1_DATABASE_ID placeholder, which makes a name-based delete fail with
+# "Invalid uuid"; resolving the id from Cloudflare avoids that. Prints the id on
+# stdout (or "" if none). If several databases share the name, a menu is shown on
+# the terminal and the chosen id is printed.
+resolve_remote_database_id() {
+  local database_name="$1"
+  [ -n "$database_name" ] || { printf ''; return 0; }
+
+  local list_file
+  list_file="$(mktemp)"
+  if ! wrangler d1 list --json >"$list_file" 2>/dev/null; then
+    rm -f "$list_file"
+    printf ''
+    return 0
+  fi
+
+  local matches
+  matches="$(node - "$list_file" "$database_name" <<'NODE'
+const fs = require("fs");
+let data;
+try {
+  data = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+} catch (err) {
+  process.exit(0);
+}
+const target = process.argv[3];
+const list = Array.isArray(data) ? data : (data.result || data.databases || []);
+for (const db of list) {
+  const name = db.name || db.database_name;
+  const id = db.uuid || db.id || db.database_id;
+  if (name === target && id) console.log(`${id}\t${name}`);
+}
+NODE
+)" || true
+  rm -f "$list_file"
+
+  [ -n "$matches" ] || { printf ''; return 0; }
+
+  local ids=()
+  local names=()
+  while IFS=$'\t' read -r id name; do
+    [ -n "$id" ] || continue
+    ids+=("$id")
+    names+=("$name")
+  done <<< "$matches"
+
+  if [ "${#ids[@]}" -eq 1 ]; then
+    printf '%s' "${ids[0]}"
+    return 0
+  fi
+
+  echo >&2
+  echo "Multiple D1 databases named '$database_name' were found:" >&2
+  local i
+  for i in "${!ids[@]}"; do
+    echo "  $((i + 1))) ${names[$i]} (${ids[$i]})" >&2
+  done
+  local choice
+  while true; do
+    printf '%s' "Select which D1 database to delete [1]: " >&2
+    read -r choice
+    choice="${choice:-1}"
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#ids[@]}" ]; then
+      break
+    fi
+    echo "Enter a number between 1 and ${#ids[@]}." >&2
+  done
+  printf '%s' "${ids[$((choice - 1))]}"
+}
+
+# Write a database id into the first d1_databases entry of wrangler.jsonc, so a
+# subsequent name-based delete resolves the binding to the real id instead of the
+# placeholder.
+set_database_id_in_config() {
+  local database_id="$1"
+  [ -n "$database_id" ] || return 0
+  node - "$database_id" <<'NODE'
+const fs = require("fs");
+const path = "wrangler.jsonc";
+const [databaseId] = process.argv.slice(2);
+const config = JSON.parse(fs.readFileSync(path, "utf8"));
+const databases = config.d1_databases || [];
+if (databases.length) {
+  databases[0].database_id = databaseId;
+  fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+}
+NODE
+}
+
+# Delete a remote D1 database by name, first pointing the wrangler.jsonc binding at
+# the resolved real id so wrangler does not try to use the placeholder. Uses the
+# only confirmation-skipping flag wrangler 4.x supports (-y/--skip-confirmation).
+delete_remote_database() {
+  local database_name="$1"
+  local resolved_id="$2"
+  [ -n "$database_name" ] || return 1
+  if [ -n "$resolved_id" ]; then
+    set_database_id_in_config "$resolved_id"
+  fi
+  wrangler d1 delete "$database_name" -y >&2
+}
+
 # On re-deploy, offer to destroy and recreate the existing Worker and/or D1
 # database. Echoes the (possibly cleared) database id on stdout so the caller can
 # fall through to the normal "create database" path when the DB was destroyed.
@@ -323,10 +427,14 @@ prompt_recreate_resources() {
   if worker_exists "$worker_name"; then
     echo "Worker '$worker_name' already exists." >&2
     if confirm "Destroy and recreate the Worker?"; then
-      if ! wrangler delete "$worker_name" --force >&2; then
-        wrangler delete --name "$worker_name" --force >&2 || true
+      # `wrangler delete` takes the worker name as a positional and has no
+      # skip-confirmation flag, so it may prompt; --force lets it proceed even if
+      # other Workers depend on this one.
+      if wrangler delete "$worker_name" --force >&2; then
+        echo "Worker deleted; it will be recreated by the deploy step." >&2
+      else
+        echo "Worker delete failed; the deploy step will redeploy over it." >&2
       fi
-      echo "Worker deleted; it will be recreated by the deploy step." >&2
     fi
   fi
 
@@ -334,10 +442,13 @@ prompt_recreate_resources() {
     echo "D1 database '$database_name' already exists." >&2
     echo "Recreating it DELETES ALL class instances and drawing data." >&2
     if confirm "Destroy and recreate the D1 database?"; then
-      if wrangler d1 delete "$database_name" --yes >&2 \
-        || wrangler d1 delete "$database_name" --force >&2 \
-        || wrangler d1 delete "$database_name" --skip-confirmation >&2 \
-        || wrangler d1 delete "$database_name" >&2; then
+      local resolved_id
+      resolved_id="$(resolve_remote_database_id "$database_name")"
+      if [ -z "$resolved_id" ] && [ -n "$database_id" ] \
+          && [ "$database_id" != "REPLACE_WITH_D1_DATABASE_ID" ]; then
+        resolved_id="$database_id"
+      fi
+      if delete_remote_database "$database_name" "$resolved_id"; then
         database_id=""
         echo "D1 database deleted; a new one will be created below." >&2
       else
@@ -373,24 +484,26 @@ destroy_cloudflare_resources() {
   if [ -n "$worker_name" ]; then
     echo
     echo "Deleting Worker '$worker_name'."
+    # `wrangler delete` takes the worker name as a positional; --force lets it
+    # proceed even if other Workers depend on this one.
     if ! wrangler delete "$worker_name" --force; then
-      echo "Direct Worker delete failed; trying named delete form."
-      wrangler delete --name "$worker_name" --force
+      echo "Worker delete failed." >&2
     fi
   fi
 
   if [ -n "$database_name" ]; then
     echo
     echo "Deleting D1 database '$database_name'."
-    if wrangler d1 delete "$database_name" --yes; then
-      :
-    elif wrangler d1 delete "$database_name" --force; then
-      :
-    elif wrangler d1 delete "$database_name" --skip-confirmation; then
-      :
+    local resolved_id
+    resolved_id="$(resolve_remote_database_id "$database_name")"
+    if [ -z "$resolved_id" ] && [ -n "$database_id" ] \
+        && [ "$database_id" != "REPLACE_WITH_D1_DATABASE_ID" ]; then
+      resolved_id="$database_id"
+    fi
+    if delete_remote_database "$database_name" "$resolved_id"; then
+      echo "D1 database '$database_name' deleted."
     else
-      echo "Automatic D1 delete flags were not accepted; falling back to Wrangler's interactive prompt."
-      wrangler d1 delete "$database_name"
+      echo "D1 database delete failed." >&2
     fi
   fi
 
