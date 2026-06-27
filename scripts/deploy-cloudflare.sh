@@ -834,7 +834,7 @@ echo "Cloudflare Worker secrets (printed in the summary below; cached in $SECRET
 admin_password="$(cache_get ADMIN_PASSWORD)"
 default_teacher_key="$(cache_get DEFAULT_TEACHER_KEY)"
 secrets_set=0
-if confirm "Set/keep ADMIN_PASSWORD and DEFAULT_TEACHER_KEY now?"; then
+if confirm "Set/change ADMIN_PASSWORD and DEFAULT_TEACHER_KEY now? (No keeps the existing or default values)"; then
   admin_password="$(read_secret "ADMIN_PASSWORD (teacher dashboard / admin / data export)" "$admin_password")"
   default_teacher_key="$(read_secret "DEFAULT_TEACHER_KEY (global teacher portal key)" "$default_teacher_key")"
   printf '%s' "$admin_password" | wrangler secret put ADMIN_PASSWORD
