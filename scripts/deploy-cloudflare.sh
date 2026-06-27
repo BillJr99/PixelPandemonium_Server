@@ -528,6 +528,76 @@ delete_remote_database() {
   wrangler d1 delete "$database_name" -y >&2
 }
 
+# List every D1 database in the account (wrangler d1 list --json) and let the user
+# pick one from a menu, with a final "Other" choice to type an id manually. Prints
+# the chosen id on stdout (or "" if none was chosen). Used when the user declines to
+# create a new database so they can attach an existing one without hunting for its id.
+choose_existing_database_id() {
+  local list_file
+  list_file="$(mktemp)"
+  local entries=""
+  if wrangler d1 list --json >"$list_file" 2>/dev/null; then
+    entries="$(node - "$list_file" <<'NODE'
+const fs = require("fs");
+let data;
+try {
+  data = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+} catch (err) {
+  process.exit(0);
+}
+const list = Array.isArray(data) ? data : (data.result || data.databases || []);
+for (const db of list) {
+  const name = db.name || db.database_name;
+  const id = db.uuid || db.id || db.database_id;
+  if (id) console.log(`${id}\t${name || "(unnamed)"}`);
+}
+NODE
+)" || true
+  fi
+  rm -f "$list_file"
+
+  local ids=()
+  local names=()
+  if [ -n "$entries" ]; then
+    while IFS=$'\t' read -r id name; do
+      [ -n "$id" ] || continue
+      ids+=("$id")
+      names+=("$name")
+    done <<< "$entries"
+  fi
+
+  echo >&2
+  local i
+  if [ "${#ids[@]}" -gt 0 ]; then
+    echo "Existing D1 databases in your Cloudflare account:" >&2
+    for i in "${!ids[@]}"; do
+      echo "  $((i + 1))) ${names[$i]} (${ids[$i]})" >&2
+    done
+  else
+    echo "No existing D1 databases were found (or the account could not be listed)." >&2
+  fi
+  local other_choice=$(( ${#ids[@]} + 1 ))
+  echo "  ${other_choice}) Other (enter a database id manually)" >&2
+
+  local choice
+  while true; do
+    printf '%s' "Select a D1 database [1]: " >&2
+    read -r choice
+    choice="${choice:-1}"
+    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+      if [ "${#ids[@]}" -gt 0 ] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#ids[@]}" ]; then
+        printf '%s' "${ids[$((choice - 1))]}"
+        return 0
+      fi
+      if [ "$choice" -eq "$other_choice" ]; then
+        prompt_with_default "Existing D1 database id" ""
+        return 0
+      fi
+    fi
+    echo "Enter a number from the menu." >&2
+  done
+}
+
 # On re-deploy, offer to destroy and recreate the existing Worker and/or D1
 # database. Echoes the (possibly cleared) database id on stdout so the caller can
 # fall through to the normal "create database" path when the DB was destroyed.
@@ -709,7 +779,7 @@ if [ -z "$database_id" ] || [ "$database_id" = "REPLACE_WITH_D1_DATABASE_ID" ]; 
       exit 1
     fi
   else
-    database_id="$(prompt_with_default "Existing D1 database id" "")"
+    database_id="$(choose_existing_database_id)"
     if [ -z "$database_id" ]; then
       echo "D1 database id is required." >&2
       exit 1
