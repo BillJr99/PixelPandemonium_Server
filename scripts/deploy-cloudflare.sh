@@ -305,8 +305,8 @@ ensure_cloudflare_login() {
 json_value() {
   local expression="$1"
   node -e "
-const fs = require('fs');
-const config = JSON.parse(fs.readFileSync('$WRANGLER_CONFIG', 'utf8'));
+const { readJsonc } = require('./scripts/lib/read-jsonc.js');
+const config = readJsonc('$WRANGLER_CONFIG');
 const value = $expression;
 if (Array.isArray(value)) console.log(value.join(','));
 else if (value === undefined || value === null) console.log('');
@@ -320,8 +320,8 @@ else console.log(String(value));
 # they are summarized separately below.
 print_worker_vars() {
   node -e "
-const fs = require('fs');
-const config = JSON.parse(fs.readFileSync('$WRANGLER_CONFIG', 'utf8'));
+const { readJsonc } = require('./scripts/lib/read-jsonc.js');
+const config = readJsonc('$WRANGLER_CONFIG');
 const vars = config.vars || {};
 for (const key of Object.keys(vars)) {
   console.log('  ' + key + ': ' + vars[key]);
@@ -335,9 +335,10 @@ update_wrangler_config() {
   local database_id="$3"
   node - "$client_base_url" "$allowed_origins" "$database_id" <<'NODE'
 const fs = require("fs");
+const { readJsonc } = require("./scripts/lib/read-jsonc.js");
 const path = "wrangler.jsonc";
 const [clientBaseUrl, allowedOrigins, databaseId] = process.argv.slice(2);
-const config = JSON.parse(fs.readFileSync(path, "utf8"));
+const config = readJsonc(path);
 
 config.vars = config.vars || {};
 config.vars.ALLOWED_ORIGINS = allowedOrigins;
@@ -361,8 +362,9 @@ NODE
 set_worker_vars() {
   node - "$@" <<'NODE'
 const fs = require("fs");
+const { readJsonc } = require("./scripts/lib/read-jsonc.js");
 const path = "wrangler.jsonc";
-const config = JSON.parse(fs.readFileSync(path, "utf8"));
+const config = readJsonc(path);
 config.vars = config.vars || {};
 for (const pair of process.argv.slice(2)) {
   const idx = pair.indexOf("=");
@@ -512,9 +514,10 @@ set_database_id_in_config() {
   [ -n "$database_id" ] || return 0
   node - "$database_id" <<'NODE'
 const fs = require("fs");
+const { readJsonc } = require("./scripts/lib/read-jsonc.js");
 const path = "wrangler.jsonc";
 const [databaseId] = process.argv.slice(2);
-const config = JSON.parse(fs.readFileSync(path, "utf8"));
+const config = readJsonc(path);
 const databases = config.d1_databases || [];
 if (databases.length) {
   databases[0].database_id = databaseId;
