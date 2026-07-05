@@ -18,9 +18,23 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # Runs the node:test suites under tests/unit, including the integration
-      # tests that boot the real Node server on a free port. These need no
-      # Cloudflare deployment. Worker-only behavior (D1, the deployed spec.js
-      # route) is validated at deploy time by `wrangler deploy` and is skipped here.
-      - name: Run tests
+      # Runs the node:test suites under tests/unit. These need no Cloudflare
+      # deployment. Worker route coverage is enforced offline by
+      # tests/unit/routeParity.test.js, which asserts every Express route has a
+      # Worker counterpart (a missing Worker route is how POST /pictures/custom
+      # once 404ed in production while CI stayed green).
+      - name: Run unit tests
         run: node --test tests/unit/*.test.js
+
+      # Boots the real Node server on localhost and exercises the HTTP API end
+      # to end (custom pictures, instance lifecycle incl. expired delete/restore,
+      # auth bans). Fully offline: everything runs against 127.0.0.1.
+      - name: Run integration tests
+        run: ./test.sh
+
+      # The Worker must keep bundling: a broken import or TS syntax error would
+      # otherwise only surface at deploy time.
+      - name: Bundle Cloudflare Worker (dry run)
+        run: npx wrangler deploy --dry-run --outdir=/tmp/worker-build
+        env:
+          WRANGLER_SEND_METRICS: "false"

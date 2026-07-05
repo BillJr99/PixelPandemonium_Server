@@ -7,6 +7,8 @@ const {
   getInstance,
   requireActiveInstance,
   resetInstance,
+  deleteExpiredInstance,
+  cleanupExpired,
   listPictures,
   createCustomPicture,
   pictureSpecJs,
@@ -276,5 +278,106 @@ test("resetInstance rejects wrong admin code", async () => {
   }, config);
 
   await assert.rejects(resetInstance(db, created.instanceCode, "wrong"), /Invalid admin code/);
+  db.close();
+});
+
+test("deleteExpiredInstance removes an expired instance and its data", async () => {
+  const db = memoryDb();
+  await migrate(db);
+  const created = await createInstance(db, {
+    pictureId: "tetris",
+    teacherName: "Ada Lovelace",
+    dateTime: "2026-06-23T10:30:00",
+    expirationHours: 1
+  }, config);
+  await run(db, "INSERT INTO DATA (INSTANCE_CODE, NAME, DATA) VALUES (?, ?, ?)", [created.instanceCode, created.instanceCode, "row"]);
+  await run(db, "UPDATE INSTANCES SET EXPIRES_AT = ? WHERE INSTANCE_CODE = ?", [
+    new Date(Date.now() - 1000).toISOString(),
+    created.instanceCode
+  ]);
+
+  const result = await deleteExpiredInstance(db, created.instanceCode);
+  assert.equal(result.deletedRows, 1);
+
+  const row = await getInstance(db, created.instanceCode);
+  assert.equal(row.ACTIVE, 0);
+  const dataRows = await all(db, "SELECT * FROM DATA WHERE INSTANCE_CODE = ?", [created.instanceCode]);
+  assert.equal(dataRows.length, 0);
+  await assert.rejects(requireActiveInstance(db, created.instanceCode), /Instance not found/);
+  db.close();
+});
+
+test("deleteExpiredInstance rejects instances that have not expired", async () => {
+  const db = memoryDb();
+  await migrate(db);
+  const created = await createInstance(db, {
+    pictureId: "tetris",
+    teacherName: "Ada Lovelace",
+    dateTime: "2026-06-23T10:30:00",
+    expirationHours: 1
+  }, config);
+  await assert.rejects(deleteExpiredInstance(db, created.instanceCode), (err) => {
+    assert.equal(err.status, 403);
+    assert.match(err.message, /Only expired instances can be deleted/);
+    return true;
+  });
+  db.close();
+});
+
+test("deleteExpiredInstance treats unknown and already-deleted instances as not found", async () => {
+  const db = memoryDb();
+  await migrate(db);
+  await assert.rejects(deleteExpiredInstance(db, "NOPE-CODE"), (err) => {
+    assert.equal(err.status, 404);
+    return true;
+  });
+  const created = await createInstance(db, {
+    pictureId: "tetris",
+    teacherName: "Ada Lovelace",
+    dateTime: "2026-06-23T10:30:00",
+    expirationHours: 1
+  }, config);
+  await run(db, "UPDATE INSTANCES SET EXPIRES_AT = ?, ACTIVE = 0 WHERE INSTANCE_CODE = ?", [
+    new Date(Date.now() - 1000).toISOString(),
+    created.instanceCode
+  ]);
+  await assert.rejects(deleteExpiredInstance(db, created.instanceCode), (err) => {
+    assert.equal(err.status, 404);
+    return true;
+  });
+  db.close();
+});
+
+test("cleanupExpired purges data and soft-deletes expired instances only", async () => {
+  const db = memoryDb();
+  await migrate(db);
+  const expired = await createInstance(db, {
+    pictureId: "tetris",
+    teacherName: "Ada Lovelace",
+    dateTime: "2026-06-23T10:30:00",
+    expirationHours: -1
+  }, config);
+  const live = await createInstance(db, {
+    pictureId: "tetris",
+    teacherName: "Grace Hopper",
+    dateTime: "2026-06-23T11:30:00",
+    expirationHours: 24
+  }, config);
+  await run(db, "INSERT INTO DATA (INSTANCE_CODE, NAME, DATA) VALUES (?, ?, ?)", [expired.instanceCode, expired.instanceCode, "old"]);
+  await run(db, "INSERT INTO DATA (INSTANCE_CODE, NAME, DATA) VALUES (?, ?, ?)", [live.instanceCode, live.instanceCode, "new"]);
+
+  const result = await cleanupExpired(db);
+  assert.ok(result.expiredInstances >= 1);
+
+  const expiredRow = await getInstance(db, expired.instanceCode);
+  assert.equal(expiredRow.ACTIVE, 0);
+  const liveRow = await getInstance(db, live.instanceCode);
+  assert.equal(liveRow.ACTIVE, 1);
+  const demoRow = await getInstance(db, "tetris");
+  assert.equal(demoRow.ACTIVE, 1);
+  const expiredData = await all(db, "SELECT * FROM DATA WHERE INSTANCE_CODE = ?", [expired.instanceCode]);
+  assert.equal(expiredData.length, 0);
+  const liveData = await all(db, "SELECT * FROM DATA WHERE INSTANCE_CODE = ?", [live.instanceCode]);
+  assert.equal(liveData.length, 1);
   db.close();
 });
