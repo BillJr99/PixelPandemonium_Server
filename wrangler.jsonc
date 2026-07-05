@@ -3,6 +3,11 @@
   "name": "pixel-pandemonium-server",
   "main": "src/cloudflare-worker.ts",
   "compatibility_date": "2026-06-23",
+  // Hourly expired-instance data cleanup; mirrors the Node server's
+  // cleanup_interval_minutes: 60 in config.yaml.
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
   "durable_objects": {
     "bindings": [
       {

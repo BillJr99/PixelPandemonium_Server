@@ -477,11 +477,36 @@ async function resetInstance(db, code, adminCode) {
   return { deletedRows: result.changes || 0 };
 }
 
+// Removal policy: an instance may only be removed once it has expired (live
+// classes stay protected). Soft-deletes the instance (ACTIVE = 0, so it drops
+// out of every listing and read path) and purges its replay data.
+async function deleteExpiredInstance(db, code) {
+  const instance = await getInstance(db, code);
+  if (!instance || !instance.ACTIVE) {
+    const err = new Error("Instance not found");
+    err.status = 404;
+    throw err;
+  }
+  if (!isExpired(instance)) {
+    const err = new Error("Only expired instances can be deleted");
+    err.status = 403;
+    throw err;
+  }
+  await run(db, "UPDATE INSTANCES SET ACTIVE = 0 WHERE INSTANCE_CODE = ?", [code]);
+  const result = await run(db, "DELETE FROM DATA WHERE INSTANCE_CODE = ?", [code]);
+  return { deletedRows: result.changes || 0 };
+}
+
 async function cleanupExpired(db) {
-  const expired = await all(db, "SELECT INSTANCE_CODE FROM INSTANCES WHERE EXPIRES_AT <= ?", [new Date().toISOString()]);
+  const now = new Date().toISOString();
+  const expired = await all(db, "SELECT INSTANCE_CODE FROM INSTANCES WHERE EXPIRES_AT <= ?", [now]);
   for (const row of expired) {
     await run(db, "DELETE FROM DATA WHERE INSTANCE_CODE = ?", [row.INSTANCE_CODE]);
   }
+  // Soft-delete expired instances: they disappear from teacher lists and read
+  // paths but stay visible to admins, who can restore them with a new
+  // expiration date via POST /instance/:code/expiration.
+  await run(db, "UPDATE INSTANCES SET ACTIVE = 0 WHERE EXPIRES_AT <= ? AND ACTIVE = 1", [now]);
   return { expiredInstances: expired.length };
 }
 
@@ -508,6 +533,7 @@ module.exports = {
   getInstance,
   requireActiveInstance,
   resetInstance,
+  deleteExpiredInstance,
   cleanupExpired,
   validateCheckDigit,
   luhnCheckDigit,

@@ -225,6 +225,76 @@ DEACTIVATE_STATUS="$(curl -s -o /tmp/pixel-deactivate.json -w "%{http_code}" -H 
 test "$DEACTIVATE_STATUS" = "403"
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_A/status?key=$KEY_A" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!d.valid) process.exit(1)"
+
+# Custom-picture instances expose the spec-files zip in the instance lists.
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instances?adminPassword=$ADMIN_PASSWORD" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); const row=d.instances.find(i => i.instanceCode === process.argv[1]); if(!row || !row.pictureZipUrl || !row.pictureSpecUrl) process.exit(1)" "$CODE_CUSTOM"
+
+# Only expired instances can be deleted; active ones still return 403.
+ACTIVE_DELETE_STATUS="$(curl -s -o /tmp/pixel-active-delete.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d '{"teacherAccessKey":"teacher"}' \
+  "$BASE_URL/instance/$CODE_A/delete")"
+test "$ACTIVE_DELETE_STATUS" = "403"
+node -e "const d=require('/tmp/pixel-active-delete.json'); if(!/Only expired instances/.test(d.error)) process.exit(1)"
+
+CREATE_EXPIRED="$(curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d '{"pictureId":"tetris","teacherName":"Expired Teacher","dateTime":"2026-06-23T14:30:00","expirationHours":-1,"teacherAccessKey":"teacher"}' \
+  "$BASE_URL/instance/create")"
+CODE_EXPIRED="$(node -e "const data=JSON.parse(process.argv[1]); console.log(data.instanceCode)" "$CREATE_EXPIRED")"
+KEY_EXPIRED="$(node -e "const data=JSON.parse(process.argv[1]); console.log(data.accessKey)" "$CREATE_EXPIRED")"
+
+WRONG_OWNER_DELETE_STATUS="$(curl -s -o /tmp/pixel-wrong-owner-delete.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d '{"teacherAccessKey":"teacher-two"}' \
+  "$BASE_URL/instance/$CODE_EXPIRED/delete")"
+test "$WRONG_OWNER_DELETE_STATUS" = "403"
+clear_test_auth_failures
+
+curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d '{"teacherAccessKey":"teacher"}' \
+  "$BASE_URL/instance/$CODE_EXPIRED/delete" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.status!=='deleted') process.exit(1)"
+DELETED_STATUS="$(curl -s -o /tmp/pixel-deleted-status.json -w "%{http_code}" -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_EXPIRED/status?key=$KEY_EXPIRED")"
+test "$DELETED_STATUS" = "404"
+TETRIS_HARD_DELETE_STATUS="$(curl -s -o /tmp/pixel-tetris-delete2.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d '{"teacherAccessKey":"teacher"}' "$BASE_URL/instance/tetris/delete")"
+test "$TETRIS_HARD_DELETE_STATUS" = "403"
+
+# Expiration changes: teachers on their own active instances, admins on any
+# (including soft-deleted ones, which restores them).
+curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d '{"teacherAccessKey":"teacher","expirationHours":48}' \
+  "$BASE_URL/instance/$CODE_A/expiration" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.status!=='updated' || !d.active || new Date(d.expiresAt).getTime() <= Date.now()) process.exit(1)"
+WRONG_OWNER_EXPIRATION_STATUS="$(curl -s -o /tmp/pixel-wrong-owner-expiration.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d '{"teacherAccessKey":"teacher","expirationHours":48}' \
+  "$BASE_URL/instance/$CODE_B/expiration")"
+test "$WRONG_OWNER_EXPIRATION_STATUS" = "403"
+clear_test_auth_failures
+
+# Teachers cannot force-expire (a past expiration would make the instance
+# immediately deletable, bypassing the active-instance delete protection).
+TEACHER_FORCE_EXPIRE_STATUS="$(curl -s -o /tmp/pixel-teacher-force-expire.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d '{"teacherAccessKey":"teacher","expirationHours":-1}' \
+  "$BASE_URL/instance/$CODE_A/expiration")"
+test "$TEACHER_FORCE_EXPIRE_STATUS" = "403"
+node -e "const d=require('/tmp/pixel-teacher-force-expire.json'); if(!/Only admins/.test(d.error)) process.exit(1)"
+
+# Admins still see the soft-deleted instance and can restore it.
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instances?adminPassword=$ADMIN_PASSWORD" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); const row=d.instances.find(i => i.instanceCode === process.argv[1]); if(!row || row.active !== false) process.exit(1)" "$CODE_EXPIRED"
+TEACHER_DELETED_EXPIRATION_STATUS="$(curl -s -o /tmp/pixel-teacher-deleted-expiration.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d '{"teacherAccessKey":"teacher","expirationHours":24}' \
+  "$BASE_URL/instance/$CODE_EXPIRED/expiration")"
+test "$TEACHER_DELETED_EXPIRATION_STATUS" = "404"
+curl -fsS -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d "{\"adminPassword\":\"$ADMIN_PASSWORD\",\"expirationHours\":24}" \
+  "$BASE_URL/instance/$CODE_EXPIRED/expiration" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.status!=='updated' || !d.active) process.exit(1)"
+curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instance/$CODE_EXPIRED/status?key=$KEY_EXPIRED" \
+  | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(!d.valid) process.exit(1)"
+TETRIS_EXPIRATION_STATUS="$(curl -s -o /tmp/pixel-tetris-expiration.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d "{\"adminPassword\":\"$ADMIN_PASSWORD\",\"expirationHours\":24}" "$BASE_URL/instance/tetris/expiration")"
+test "$TETRIS_EXPIRATION_STATUS" = "403"
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/retrieve?name=$CODE_A" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); if(d.length!==1 || !d[0].DATA.includes('#123456')) process.exit(1)"
 

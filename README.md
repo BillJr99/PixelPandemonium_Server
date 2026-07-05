@@ -751,9 +751,40 @@ curl -X POST http://localhost:8000/instance/INSTANCE-CODE/deactivate \
   -d '{"adminCode":"ADMIN-CODE","teacherKey":"TEACHER-KEY","adminPassword":"admin"}'
 ```
 
-Instances cannot be deleted or deactivated. The legacy
-`/instance/:code/deactivate` and `/instance/:code/delete` routes are retained
-only to return `403` with `Instances cannot be deactivated or deleted`.
+Active (non-expired) instances cannot be deleted or deactivated. The legacy
+`/instance/:code/deactivate` route is retained only to return `403` with
+`Instances cannot be deactivated or deleted`. Once an instance has expired,
+`POST /instance/:code/delete` removes it (soft-delete plus replay-data purge)
+when authorized by the admin password or the owning teacher key:
+
+```bash
+curl -X POST http://localhost:8000/instance/INSTANCE-CODE/delete \
+  -H 'Origin: http://localhost:4000' \
+  -H 'Content-Type: application/json' \
+  -d '{"teacherAccessKey":"TEACHER-ACCESS-KEY"}'
+```
+
+Deleting a non-expired instance returns `403` with
+`Only expired instances can be deleted`.
+
+The periodic cleanup (hourly on both runtimes) purges replay data for expired
+instances and soft-deletes them the same way. Soft-deleted instances remain
+visible to admins in `GET /instances` (flagged `active: false`) and can be
+restored with a new expiration date. `POST /instance/:code/expiration` accepts
+`expirationHours` (offset from now, negative allowed to force-expire) or an
+absolute `expiresAt`, and always reactivates the instance:
+
+```bash
+curl -X POST http://localhost:8000/instance/INSTANCE-CODE/expiration \
+  -H 'Origin: http://localhost:4000' \
+  -H 'Content-Type: application/json' \
+  -d '{"adminPassword":"admin","expirationHours":720}'
+```
+
+The admin password may change the expiration of any instance (including
+soft-deleted ones, which restores them); a teacher key may only change the
+expiration of that teacher's own still-active instances. Replay data purged at
+cleanup is not brought back by a restore.
 
 ## Instance Codes
 
@@ -786,7 +817,12 @@ The browser catches most typos locally, and the server still validates code form
 - The teacher opens the replay URL and watches live updates.
 - A teacher resets an instance for practice or reuse.
 - A teacher/admin edits or deletes individual replay rows from the admin page.
-- Instances cannot be deleted or deactivated.
+- Instances cannot be deleted or deactivated while active; once expired, a
+  teacher/admin can delete them from the instance list, and the periodic
+  cleanup soft-deletes them automatically.
+- Admins see soft-deleted instances in the instance list and can restore them
+  with a new expiration date; teachers can change the expiration of their own
+  active instances.
 - A teacher/admin rotates the class key or teacher key from the admin page when
   a link needs to be invalidated.
 - A teacher/admin generates time-lapse animations from actual instance data or from the finished product, including unfinished activities.

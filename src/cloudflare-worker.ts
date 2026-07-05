@@ -1,5 +1,7 @@
 import { APP_VERSION } from "./version";
 import { isTetrisDemoCode, tetrisInsertError } from "./tetrisDemo";
+import { customPictureId, validateSpec, specToJs, generateArtifacts, zipFiles } from "./customPictures";
+import { resolveExpiresAt } from "./expiration";
 
 export interface Env {
   DB: D1Database;
@@ -63,17 +65,6 @@ const PICTURES = [
   { id: "yellowsubmarine", title: "YellowSubmarine" },
   { id: "yellowsubmarine2022", title: "YellowSubmarine-2022" }
 ].map((p) => ({ ...p, script: `/pictures/${encodeURIComponent(p.id)}/spec.js` }));
-
-// Mirrors specToJs() from customPictures.js — emits the globals the client expects.
-function specToJs(spec: any): string {
-  return [
-    `var palette = ${JSON.stringify(spec.palette, null, 2)};`,
-    `var numRows = ${Number(spec.numRows)} ;`,
-    `var numCols = ${Number(spec.numCols)} ;`,
-    `var pages = ${JSON.stringify(spec.pages, null, 2)};`,
-    ""
-  ].join("\n");
-}
 
 function allowedOrigins(env: Env): string[] {
   return (env.ALLOWED_ORIGINS || "").split(",").map((item) => item.trim()).filter(Boolean);
@@ -181,7 +172,10 @@ function normalizeToken(value: string, fallback: string, length: number): string
 
 function dateToken(dateTime: string): string {
   const date = new Date(dateTime);
-  if (Number.isNaN(date.getTime())) return "00000000";
+  if (Number.isNaN(date.getTime())) {
+    // Mirrors the Node server: salvage any digits from the raw value.
+    return normalizeToken(dateTime, "00000000", 8).replace(/\D/g, "").padEnd(8, "0").slice(0, 8);
+  }
   return `${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}${String(date.getHours()).padStart(2, "0")}${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
@@ -236,14 +230,42 @@ function urls(env: Env, instanceCode: string, admin: string, key: string, teache
   };
 }
 
-async function readRequestBody(request: Request): Promise<Record<string, any>> {
-  const type = request.headers.get("content-type") || "";
-  if (type.includes("application/json")) return await request.json();
-  if (type.includes("application/x-www-form-urlencoded")) {
-    const form = await request.formData();
-    return Object.fromEntries(form.entries());
+// Thrown while streaming a request body that exceeds MAX_BODY_BYTES; the fetch
+// wrapper turns it into a 413. Content-Length alone is not enough — clients can
+// omit or misstate it.
+class PayloadTooLargeError extends Error {}
+
+async function readBodyTextCapped(request: Request): Promise<string> {
+  const reader = request.body ? request.body.getReader() : null;
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel().catch(() => {});
+      throw new PayloadTooLargeError("Payload too large");
+    }
+    chunks.push(value);
   }
-  const text = await request.text();
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(merged);
+}
+
+async function readRequestBody(request: Request): Promise<Record<string, any>> {
+  const text = await readBodyTextCapped(request);
+  const type = request.headers.get("content-type") || "";
+  if (type.includes("application/json")) return text ? JSON.parse(text) : {};
+  if (type.includes("application/x-www-form-urlencoded")) {
+    return Object.fromEntries(new URLSearchParams(text).entries());
+  }
   return text ? { data: text } : {};
 }
 
@@ -434,6 +456,21 @@ async function adminInstance(env: Env, code: string, admin: string | null, reque
   return { row };
 }
 
+// Mirrors publicInstanceWithPicture() in server.js: picture metadata merged into
+// instance-facing responses so the client can load custom and predefined specs
+// the same way (it prefers pictureSpecUrl when replaying an instance).
+async function pictureEnrichment(env: Env, pictureId: string): Promise<Record<string, unknown>> {
+  const picture = await env.DB.prepare("SELECT TITLE, SCRIPT, CUSTOM FROM PICTURES WHERE ID = ? AND ENABLED = 1").bind(pictureId).first<any>();
+  if (!picture) return {};
+  return {
+    pictureTitle: picture.TITLE,
+    pictureScript: picture.SCRIPT,
+    pictureCustom: !!picture.CUSTOM,
+    pictureSpecUrl: `/pictures/${encodeURIComponent(pictureId)}/spec.js`,
+    ...(picture.CUSTOM ? { pictureZipUrl: `/pictures/${encodeURIComponent(pictureId)}/spec-files.zip` } : {})
+  };
+}
+
 async function ensurePictures(env: Env): Promise<void> {
   for (const picture of PICTURES) {
     await env.DB.prepare(
@@ -472,10 +509,17 @@ async function ensureDemoInstance(env: Env): Promise<void> {
   ).run();
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+// Mirrors the Node server's express.json({ limit: "10mb" }).
+const MAX_BODY_BYTES = 10 * 1024 * 1024;
+
+async function handleFetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request, env) });
+    // Fast-path reject on declared size; readBodyTextCapped() enforces the same
+    // limit while streaming for bodies that omit or misstate Content-Length.
+    if (Number(request.headers.get("content-length") || 0) > MAX_BODY_BYTES) {
+      return json(request, env, { error: "Payload too large" }, { status: 413 });
+    }
     const limited = await rateLimitResponse(request, env);
     if (limited) return limited;
     if (url.pathname !== "/health" && url.pathname !== "/faye" && !originAllowed(request, env)) {
@@ -517,18 +561,86 @@ export default {
       });
     }
 
+    // Downloadable bundle of the generated Post-It/ColorMap files. Custom
+    // pictures store artifacts at upload time; predefined pictures generate
+    // them on demand from their seeded spec (mirrors pictureArtifacts() in
+    // instanceManager.js).
+    const zipMatch = url.pathname.match(/^\/pictures\/([^/]+)\/spec-files\.zip$/);
+    if (zipMatch && request.method === "GET") {
+      await ensurePictures(env);
+      const id = decodeURIComponent(zipMatch[1]);
+      const row = await env.DB.prepare("SELECT TITLE as title, SPEC_JSON as specJson, ARTIFACTS_JSON as artifactsJson FROM PICTURES WHERE ID = ? AND ENABLED = 1").bind(id).first<any>();
+      if (!row || (!row.artifactsJson && !row.specJson)) return json(request, env, { error: "Picture not found" }, { status: 404 });
+      const artifacts = row.artifactsJson ? JSON.parse(row.artifactsJson) : generateArtifacts(row.title, JSON.parse(row.specJson));
+      const filename = `${String(row.title).replace(/[^a-z0-9_-]+/gi, "_") || "custom"}_spec_files.zip`;
+      return new Response(zipFiles(artifacts), {
+        headers: {
+          "content-type": "application/zip",
+          "content-disposition": `attachment; filename="${filename}"`,
+          ...corsHeaders(request, env)
+        }
+      });
+    }
+
+    // Registers a teacher-uploaded custom picture (the client posts the
+    // analyzed spec here before /instance/create). Mirrors POST /pictures/custom
+    // in server.js + createCustomPicture() in instanceManager.js. The custom-
+    // prefixed id requirement protects the seeded predefined rows from overwrite.
+    if (url.pathname === "/pictures/custom" && request.method === "POST") {
+      await ensurePictures(env);
+      const body = await readRequestBody(request);
+      const access = await adminOrTeacherPortalAccess(request, env, url, body);
+      if (access.response) return access.response;
+      const title = String(body.title || "Custom Picture").trim().slice(0, 120) || "Custom Picture";
+      let spec: any;
+      try {
+        spec = validateSpec(body.spec);
+      } catch (err: any) {
+        return json(request, env, { error: err.message }, { status: err.status || 400 });
+      }
+      const id = body.id ? String(body.id).trim() : customPictureId(title);
+      if (!/^custom-[a-z0-9-]+$/i.test(id)) {
+        return json(request, env, { error: "Custom picture id must start with custom- and contain only letters, numbers, and hyphens" }, { status: 400 });
+      }
+      const script = `/pictures/${encodeURIComponent(id)}/spec.js`;
+      const artifacts = body.artifacts && typeof body.artifacts === "object" ? body.artifacts : generateArtifacts(title, spec);
+      await env.DB.prepare(
+        `INSERT INTO PICTURES (ID, TITLE, SCRIPT, ENABLED, CUSTOM, SPEC_JSON, ARTIFACTS_JSON)
+         VALUES (?, ?, ?, 1, 1, ?, ?)
+         ON CONFLICT(ID) DO UPDATE SET
+           TITLE = excluded.TITLE,
+           SCRIPT = excluded.SCRIPT,
+           ENABLED = 1,
+           CUSTOM = 1,
+           SPEC_JSON = excluded.SPEC_JSON,
+           ARTIFACTS_JSON = excluded.ARTIFACTS_JSON`
+      ).bind(id, title, script, JSON.stringify(spec), JSON.stringify(artifacts)).run();
+      return json(request, env, {
+        id,
+        title,
+        script,
+        custom: true,
+        specUrl: script,
+        zipUrl: `/pictures/${encodeURIComponent(id)}/spec-files.zip`
+      }, { status: 201 });
+    }
+
     if (url.pathname === "/instances" && request.method === "GET") {
       await ensurePictures(env);
-      const passwordError = await adminPasswordError(request, env, url);
-      if (passwordError) return passwordError;
+      // Parity with the Node server: the full list is available to the admin
+      // password or any valid global teacher key. Admins also see soft-deleted
+      // (expired/cleaned-up) instances so they can restore them.
+      const access = await adminOrTeacherPortalAccess(request, env, url);
+      if (access.response) return access.response;
       const result = await env.DB.prepare(
         `SELECT i.*, p.TITLE as PICTURE_TITLE, p.SCRIPT as PICTURE_SCRIPT, p.CUSTOM as PICTURE_CUSTOM
          FROM INSTANCES i
          LEFT JOIN PICTURES p ON p.ID = i.PICTURE_ID
-         WHERE i.ACTIVE = 1
+         ${access.mode === "admin" ? "" : "WHERE i.ACTIVE = 1"}
          ORDER BY i.CREATED_AT DESC, i.ID DESC`
       ).all<any>();
       const instances = (result.results || []).map((row: any) => ({
+        active: !!row.ACTIVE,
         instanceCode: row.INSTANCE_CODE,
         instanceName: row.INSTANCE_NAME || row.INSTANCE_CODE,
         pictureId: row.PICTURE_ID,
@@ -539,6 +651,8 @@ export default {
         pictureTitle: row.PICTURE_TITLE,
         pictureScript: row.PICTURE_SCRIPT,
         pictureCustom: !!row.PICTURE_CUSTOM,
+        pictureSpecUrl: `/pictures/${encodeURIComponent(row.PICTURE_ID)}/spec.js`,
+        ...(row.PICTURE_CUSTOM ? { pictureZipUrl: `/pictures/${encodeURIComponent(row.PICTURE_ID)}/spec-files.zip` } : {}),
         adminCode: row.ADMIN_CODE,
         accessKey: row.ACCESS_KEY,
         teacherKey: row.TEACHER_KEY,
@@ -588,6 +702,7 @@ export default {
          ORDER BY i.CREATED_AT DESC, i.ID DESC`
       ).bind(portal.teacherAccessKey).all<any>();
       const instances = (result.results || []).map((row: any) => ({
+        active: true,
         instanceCode: row.INSTANCE_CODE,
         instanceName: row.INSTANCE_NAME || row.INSTANCE_CODE,
         pictureId: row.PICTURE_ID,
@@ -598,6 +713,8 @@ export default {
         pictureTitle: row.PICTURE_TITLE,
         pictureScript: row.PICTURE_SCRIPT,
         pictureCustom: !!row.PICTURE_CUSTOM,
+        pictureSpecUrl: `/pictures/${encodeURIComponent(row.PICTURE_ID)}/spec.js`,
+        ...(row.PICTURE_CUSTOM ? { pictureZipUrl: `/pictures/${encodeURIComponent(row.PICTURE_ID)}/spec-files.zip` } : {}),
         adminCode: row.ADMIN_CODE,
         accessKey: row.ACCESS_KEY,
         teacherKey: row.TEACHER_KEY,
@@ -638,7 +755,18 @@ export default {
       }
       const picture = await env.DB.prepare("SELECT ID FROM PICTURES WHERE ID = ? AND ENABLED = 1").bind(body.pictureId).first();
       if (!picture) return json(request, env, { error: "Unknown pictureId" }, { status: 400 });
-      const code = generateInstanceCode(body.pictureId, body.teacherName, body.dateTime);
+      // Mirrors the Node server: the random component only has 100 values per
+      // picture/teacher/minute, so retry on collision instead of failing.
+      let code: string | null = null;
+      for (let i = 0; i < 100; i++) {
+        const candidate = generateInstanceCode(body.pictureId, body.teacherName, body.dateTime);
+        const existing = await env.DB.prepare("SELECT ID FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(candidate).first();
+        if (!existing) {
+          code = candidate;
+          break;
+        }
+      }
+      if (!code) return json(request, env, { error: "Could not generate a unique instance code for that picture, teacher, and date/time" }, { status: 409 });
       const instanceName = String(body.instanceName || code).trim();
       if (instanceName.toLowerCase() === "tetris") return json(request, env, { error: "Instance name is reserved" }, { status: 409 });
       const existingName = await env.DB.prepare("SELECT ID FROM INSTANCES WHERE INSTANCE_NAME = ?").bind(instanceName).first();
@@ -655,7 +783,7 @@ export default {
       return json(request, env, { instanceCode: code, adminCode: admin, accessKey: key, teacherKey, instanceName, pictureId: body.pictureId, teacherName: body.teacherName, requestedDateTime: body.dateTime, expiresAt, ...urls(env, code, admin, key, teacherKey) }, { status: 201 });
     }
 
-    const instanceMatch = url.pathname.match(/^\/instance\/([^/]+)\/(status|insert|retrieve|reset|admin|deactivate|delete|rotate-key)$/);
+    const instanceMatch = url.pathname.match(/^\/instance\/([^/]+)\/(status|insert|retrieve|reset|admin|deactivate|delete|rotate-key|expiration)$/);
     if (instanceMatch) {
       const code = decodeURIComponent(instanceMatch[1]);
       const action = instanceMatch[2];
@@ -678,13 +806,67 @@ export default {
           createdAt: row.CREATED_AT,
           expiresAt: row.EXPIRES_AT,
           accessKey: row.ACCESS_KEY,
+          ...(await pictureEnrichment(env, row.PICTURE_ID)),
           ...urls(env, row.INSTANCE_CODE, row.ADMIN_CODE, row.ACCESS_KEY, row.TEACHER_KEY),
           rows: result.results
         });
       }
 
-      if ((action === "deactivate" || action === "delete") && request.method === "POST") {
+      if (action === "deactivate" && request.method === "POST") {
         return json(request, env, { error: "Instances cannot be deactivated or deleted" }, { status: 403 });
+      }
+
+      // Expired instances only: authorized by the admin password or the owning
+      // teacher key. Active (non-expired) instances still cannot be deleted.
+      if (action === "delete" && request.method === "POST") {
+        if (isTetrisDemoCode(code)) return json(request, env, { error: "The public Tetris demo cannot be deleted" }, { status: 403 });
+        if (!validateCheckDigit(code)) return json(request, env, { error: "Invalid instance code" }, { status: 400 });
+        const body = await readRequestBody(request);
+        const access = await adminOrTeacherPortalAccess(request, env, url, body);
+        if (access.response) return access.response;
+        const row = await env.DB.prepare("SELECT * FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(code).first<any>();
+        if (!row || row.ACTIVE === 0) return json(request, env, { error: "Instance not found" }, { status: 404 });
+        if (access.mode === "teacher" && String(row.TEACHER_ACCESS_KEY || "") !== String(access.teacherAccessKey || "")) {
+          return authError(request, env, "teacher", "teacher-instance-owner", "Teacher key does not own this instance");
+        }
+        if (new Date(row.EXPIRES_AT).getTime() > Date.now()) {
+          return json(request, env, { error: "Only expired instances can be deleted" }, { status: 403 });
+        }
+        await env.DB.prepare("UPDATE INSTANCES SET ACTIVE = 0 WHERE INSTANCE_CODE = ?").bind(code).run();
+        const result = await env.DB.prepare("DELETE FROM DATA WHERE INSTANCE_CODE = ?").bind(code).run();
+        return json(request, env, { status: "deleted", instanceCode: code, deletedRows: result.meta.changes || 0 });
+      }
+
+      // Change an instance's expiration date. Admin password: any instance,
+      // including soft-deleted ones (setting a new expiration restores them to
+      // ACTIVE). Teacher key: only that teacher's own still-active instances.
+      if (action === "expiration" && request.method === "POST") {
+        if (isTetrisDemoCode(code)) return json(request, env, { error: "The public Tetris demo never expires" }, { status: 403 });
+        if (!validateCheckDigit(code)) return json(request, env, { error: "Invalid instance code" }, { status: 400 });
+        const body = await readRequestBody(request);
+        const access = await adminOrTeacherPortalAccess(request, env, url, body);
+        if (access.response) return access.response;
+        const row = await env.DB.prepare("SELECT * FROM INSTANCES WHERE INSTANCE_CODE = ?").bind(code).first<any>();
+        if (!row || (access.mode === "teacher" && row.ACTIVE === 0)) {
+          return json(request, env, { error: "Instance not found" }, { status: 404 });
+        }
+        if (access.mode === "teacher" && String(row.TEACHER_ACCESS_KEY || "") !== String(access.teacherAccessKey || "")) {
+          return authError(request, env, "teacher", "teacher-instance-owner", "Teacher key does not own this instance");
+        }
+        let expiresAt: string;
+        try {
+          expiresAt = resolveExpiresAt(body);
+        } catch (err: any) {
+          return json(request, env, { error: err.message }, { status: err.status || 400 });
+        }
+        // A past expiration makes the instance immediately deletable, which
+        // would let a teacher bypass the active-instance delete protection.
+        // Only admins may force-expire.
+        if (access.mode === "teacher" && new Date(expiresAt).getTime() <= Date.now()) {
+          return json(request, env, { error: "Only admins can set an expiration in the past" }, { status: 403 });
+        }
+        await env.DB.prepare("UPDATE INSTANCES SET EXPIRES_AT = ?, ACTIVE = 1 WHERE INSTANCE_CODE = ?").bind(expiresAt, code).run();
+        return json(request, env, { status: "updated", instanceCode: code, expiresAt, active: true });
       }
 
       if (action === "rotate-key" && request.method === "POST") {
@@ -713,7 +895,28 @@ export default {
       }
 
       const found = await activeInstance(env, code);
-      if (found.error) return json(request, env, { valid: false, error: found.error, ...(found.row ? { pictureId: found.row.PICTURE_ID, expiresAt: found.row.EXPIRES_AT } : {}) }, { status: found.status });
+      if (found.error) {
+        // Expired /status mirrors the Node server: the class key is still
+        // required, and the 410 body carries the instance + picture metadata
+        // so the client can say what expired.
+        if (found.row && action === "status" && request.method === "GET") {
+          const accessError = await instanceAccessError(request, env, url, found.row);
+          if (accessError) return accessError;
+          return json(request, env, {
+            valid: false,
+            error: found.error,
+            instanceCode: found.row.INSTANCE_CODE,
+            instanceName: found.row.INSTANCE_NAME || found.row.INSTANCE_CODE,
+            pictureId: found.row.PICTURE_ID,
+            teacherName: found.row.TEACHER_NAME,
+            requestedDateTime: found.row.REQUESTED_DATETIME,
+            createdAt: found.row.CREATED_AT,
+            expiresAt: found.row.EXPIRES_AT,
+            ...(await pictureEnrichment(env, found.row.PICTURE_ID))
+          }, { status: found.status });
+        }
+        return json(request, env, { valid: false, error: found.error }, { status: found.status });
+      }
       const row = found.row!;
 
       if (action === "status" && request.method === "GET") {
@@ -728,6 +931,7 @@ export default {
           requestedDateTime: row.REQUESTED_DATETIME,
           createdAt: row.CREATED_AT,
           expiresAt: row.EXPIRES_AT,
+          ...(await pictureEnrichment(env, row.PICTURE_ID)),
           ...studentUrls(env, row.INSTANCE_CODE, row.ACCESS_KEY)
         });
       }
@@ -826,6 +1030,30 @@ export default {
     }
 
     return json(request, env, { error: "Not found" }, { status: 404 });
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    try {
+      return await handleFetch(request, env);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        return json(request, env, { error: "Payload too large" }, { status: 413 });
+      }
+      throw err;
+    }
+  },
+
+  // Mirrors the Node server's periodic cleanupExpired(): purge replay data for
+  // expired instances and soft-delete them. Soft-deleted instances stay
+  // visible to admins, who can restore them with a new expiration date via
+  // POST /instance/:code/expiration. Driven by the cron trigger in wrangler.jsonc.
+  async scheduled(_event: ScheduledController, env: Env): Promise<void> {
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      "DELETE FROM DATA WHERE INSTANCE_CODE IN (SELECT INSTANCE_CODE FROM INSTANCES WHERE EXPIRES_AT <= ?)"
+    ).bind(now).run();
+    await env.DB.prepare("UPDATE INSTANCES SET ACTIVE = 0 WHERE EXPIRES_AT <= ? AND ACTIVE = 1").bind(now).run();
   }
 };
 

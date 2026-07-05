@@ -1,4 +1,11 @@
-const crypto = require("crypto");
+// Runtime-agnostic: shared by the Node server (server.js) and the Cloudflare
+// Worker (cloudflare-worker.ts), so only Web APIs are used here — no Buffer,
+// no node:crypto. globalThis.crypto requires Node >= 19 or a Workers runtime.
+
+function randomHex(byteCount) {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(byteCount));
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 function sanitizeIdPart(value) {
   return String(value || "custom")
@@ -9,7 +16,7 @@ function sanitizeIdPart(value) {
 }
 
 function customPictureId(title) {
-  return `custom-${sanitizeIdPart(title)}-${crypto.randomBytes(4).toString("hex")}`;
+  return `custom-${sanitizeIdPart(title)}-${randomHex(4)}`;
 }
 
 function validateSpec(spec) {
@@ -165,42 +172,54 @@ function crc32(buffer) {
 }
 
 function u16(n) {
-  const b = Buffer.alloc(2);
-  b.writeUInt16LE(n);
+  const b = new Uint8Array(2);
+  new DataView(b.buffer).setUint16(0, n, true);
   return b;
 }
 
 function u32(n) {
-  const b = Buffer.alloc(4);
-  b.writeUInt32LE(n >>> 0);
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, n >>> 0, true);
   return b;
 }
 
+function concatBytes(parts) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
 function zipFiles(files) {
+  const encoder = new TextEncoder();
   const localParts = [];
   const centralParts = [];
   let offset = 0;
   Object.entries(files).forEach(([name, content]) => {
-    const nameBuf = Buffer.from(name);
-    const data = Buffer.from(String(content), "utf8");
+    const nameBuf = encoder.encode(name);
+    const data = encoder.encode(String(content));
     const crc = crc32(data);
-    const local = Buffer.concat([
+    const local = concatBytes([
       u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0), u32(crc), u32(data.length), u32(data.length),
       u16(nameBuf.length), u16(0), nameBuf, data
     ]);
     localParts.push(local);
-    centralParts.push(Buffer.concat([
+    centralParts.push(concatBytes([
       u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0), u32(crc), u32(data.length), u32(data.length),
       u16(nameBuf.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset), nameBuf
     ]));
     offset += local.length;
   });
-  const central = Buffer.concat(centralParts);
-  const end = Buffer.concat([
+  const central = concatBytes(centralParts);
+  const end = concatBytes([
     u32(0x06054b50), u16(0), u16(0), u16(centralParts.length), u16(centralParts.length),
     u32(central.length), u32(offset), u16(0)
   ]);
-  return Buffer.concat([...localParts, central, end]);
+  return concatBytes([...localParts, central, end]);
 }
 
 module.exports = {

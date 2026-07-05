@@ -16,6 +16,7 @@ const {
   getInstance,
   requireActiveInstance,
   resetInstance,
+  deleteExpiredInstance,
   cleanupExpired,
   validateCheckDigit,
   listPictures,
@@ -32,6 +33,7 @@ const {
   all
 } = require("./instanceManager");
 const { zipFiles } = require("./customPictures");
+const { resolveExpiresAt } = require("./expiration");
 
 const config = loadConfig();
 const app = express();
@@ -646,7 +648,7 @@ app.get("/pictures/:id/spec-files.zip", async (req, res) => {
     const filename = `${String(title).replace(/[^a-z0-9_-]+/gi, "_") || "custom"}_spec_files.zip`;
     res.setHeader("content-type", "application/zip");
     res.setHeader("content-disposition", `attachment; filename="${filename}"`);
-    res.send(zipFiles(artifacts));
+    res.send(Buffer.from(zipFiles(artifacts)));
   } catch (err) {
     errorResponse(req, res, err);
   } finally {
@@ -673,12 +675,17 @@ app.get("/instances", async (req, res) => {
   const db = openDb();
   try {
     await ensureMigrated(db);
-    await requireAdminOrTeacherPortalAccess(db, req);
-    const rows = await all(db, "SELECT * FROM INSTANCES WHERE ACTIVE = 1 ORDER BY CREATED_AT DESC, ID DESC");
+    const access = await requireAdminOrTeacherPortalAccess(db, req);
+    // Admins also see soft-deleted (expired/cleaned-up) instances so they can
+    // restore them with a new expiration date.
+    const rows = access.mode === "admin"
+      ? await all(db, "SELECT * FROM INSTANCES ORDER BY CREATED_AT DESC, ID DESC")
+      : await all(db, "SELECT * FROM INSTANCES WHERE ACTIVE = 1 ORDER BY CREATED_AT DESC, ID DESC");
     const instances = [];
     for (const row of rows) {
       instances.push({
         ...(await publicInstanceWithPicture(db, row)),
+        active: !!row.ACTIVE,
         adminCode: row.ADMIN_CODE,
         accessKey: row.ACCESS_KEY,
         teacherKey: row.TEACHER_KEY,
@@ -704,6 +711,7 @@ app.get("/teacher/instances", async (req, res) => {
     for (const row of rows) {
       instances.push({
         ...(await publicInstanceWithPicture(db, row)),
+        active: true,
         adminCode: row.ADMIN_CODE,
         accessKey: row.ACCESS_KEY,
         teacherKey: row.TEACHER_KEY,
@@ -823,7 +831,84 @@ async function deactivateInstance(req, res) {
 }
 
 app.post("/instance/:code/deactivate", deactivateInstance);
-app.post("/instance/:code/delete", deactivateInstance);
+
+// Expired instances only: authorized by the admin password or the owning
+// teacher key. Active (non-expired) instances still cannot be deleted.
+app.post("/instance/:code/delete", async (req, res) => {
+  const db = openDb();
+  try {
+    await ensureMigrated(db);
+    if (isTetrisDemoCode(req.params.code)) {
+      const err = new Error("The public Tetris demo cannot be deleted");
+      err.status = 403;
+      throw err;
+    }
+    if (!validateCheckDigit(req.params.code)) {
+      const err = new Error("Invalid instance code");
+      err.status = 400;
+      throw err;
+    }
+    const access = await requireAdminOrTeacherPortalAccess(db, req);
+    const row = await getInstance(db, req.params.code);
+    if (!row || !row.ACTIVE) {
+      const err = new Error("Instance not found");
+      err.status = 404;
+      throw err;
+    }
+    if (access.mode === "teacher") await requireTeacherOwnsInstance(db, req, row);
+    const result = await deleteExpiredInstance(db, req.params.code);
+    await clearAuthFailures(db, req);
+    res.json({ status: "deleted", instanceCode: req.params.code, ...result });
+  } catch (err) {
+    errorResponse(req, res, err);
+  } finally {
+    db.close();
+  }
+});
+
+// Change an instance's expiration date. Admin password: any instance, including
+// soft-deleted ones (setting a new expiration restores them to ACTIVE). Teacher
+// key: only that teacher's own still-active instances.
+app.post("/instance/:code/expiration", async (req, res) => {
+  const db = openDb();
+  try {
+    await ensureMigrated(db);
+    if (isTetrisDemoCode(req.params.code)) {
+      const err = new Error("The public Tetris demo never expires");
+      err.status = 403;
+      throw err;
+    }
+    if (!validateCheckDigit(req.params.code)) {
+      const err = new Error("Invalid instance code");
+      err.status = 400;
+      throw err;
+    }
+    const access = await requireAdminOrTeacherPortalAccess(db, req);
+    const row = await getInstance(db, req.params.code);
+    if (!row || (access.mode === "teacher" && !row.ACTIVE)) {
+      const err = new Error("Instance not found");
+      err.status = 404;
+      throw err;
+    }
+    if (access.mode === "teacher") await requireTeacherOwnsInstance(db, req, row);
+    const expiresAt = resolveExpiresAt(req.body || {});
+    // A past expiration makes the instance immediately deletable, which would
+    // let a teacher bypass the active-instance delete protection. Only admins
+    // may force-expire.
+    if (access.mode === "teacher" && new Date(expiresAt).getTime() <= Date.now()) {
+      const err = new Error("Only admins can set an expiration in the past");
+      err.status = 403;
+      throw err;
+    }
+    await run(db, "UPDATE INSTANCES SET EXPIRES_AT = ?, ACTIVE = 1 WHERE INSTANCE_CODE = ?", [expiresAt, req.params.code]);
+    await clearAuthFailures(db, req);
+    res.json({ status: "updated", instanceCode: req.params.code, expiresAt, active: true });
+  } catch (err) {
+    errorResponse(req, res, err);
+  } finally {
+    db.close();
+  }
+});
 
 app.post("/instance/:code/rotate-key", async (req, res) => {
   const db = openDb();
