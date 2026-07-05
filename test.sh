@@ -271,6 +271,14 @@ WRONG_OWNER_EXPIRATION_STATUS="$(curl -s -o /tmp/pixel-wrong-owner-expiration.js
 test "$WRONG_OWNER_EXPIRATION_STATUS" = "403"
 clear_test_auth_failures
 
+# Teachers cannot force-expire (a past expiration would make the instance
+# immediately deletable, bypassing the active-instance delete protection).
+TEACHER_FORCE_EXPIRE_STATUS="$(curl -s -o /tmp/pixel-teacher-force-expire.json -w "%{http_code}" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+  -d '{"teacherAccessKey":"teacher","expirationHours":-1}' \
+  "$BASE_URL/instance/$CODE_A/expiration")"
+test "$TEACHER_FORCE_EXPIRE_STATUS" = "403"
+node -e "const d=require('/tmp/pixel-teacher-force-expire.json'); if(!/Only admins/.test(d.error)) process.exit(1)"
+
 # Admins still see the soft-deleted instance and can restore it.
 curl -fsS -H "Origin: $ORIGIN" "$BASE_URL/instances?adminPassword=$ADMIN_PASSWORD" \
   | node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync(0,'utf8')); const row=d.instances.find(i => i.instanceCode === process.argv[1]); if(!row || row.active !== false) process.exit(1)" "$CODE_EXPIRED"

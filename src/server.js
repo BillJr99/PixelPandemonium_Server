@@ -892,6 +892,14 @@ app.post("/instance/:code/expiration", async (req, res) => {
     }
     if (access.mode === "teacher") await requireTeacherOwnsInstance(db, req, row);
     const expiresAt = resolveExpiresAt(req.body || {});
+    // A past expiration makes the instance immediately deletable, which would
+    // let a teacher bypass the active-instance delete protection. Only admins
+    // may force-expire.
+    if (access.mode === "teacher" && new Date(expiresAt).getTime() <= Date.now()) {
+      const err = new Error("Only admins can set an expiration in the past");
+      err.status = 403;
+      throw err;
+    }
     await run(db, "UPDATE INSTANCES SET EXPIRES_AT = ?, ACTIVE = 1 WHERE INSTANCE_CODE = ?", [expiresAt, req.params.code]);
     await clearAuthFailures(db, req);
     res.json({ status: "updated", instanceCode: req.params.code, expiresAt, active: true });

@@ -230,14 +230,42 @@ function urls(env: Env, instanceCode: string, admin: string, key: string, teache
   };
 }
 
-async function readRequestBody(request: Request): Promise<Record<string, any>> {
-  const type = request.headers.get("content-type") || "";
-  if (type.includes("application/json")) return await request.json();
-  if (type.includes("application/x-www-form-urlencoded")) {
-    const form = await request.formData();
-    return Object.fromEntries(form.entries());
+// Thrown while streaming a request body that exceeds MAX_BODY_BYTES; the fetch
+// wrapper turns it into a 413. Content-Length alone is not enough — clients can
+// omit or misstate it.
+class PayloadTooLargeError extends Error {}
+
+async function readBodyTextCapped(request: Request): Promise<string> {
+  const reader = request.body ? request.body.getReader() : null;
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel().catch(() => {});
+      throw new PayloadTooLargeError("Payload too large");
+    }
+    chunks.push(value);
   }
-  const text = await request.text();
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(merged);
+}
+
+async function readRequestBody(request: Request): Promise<Record<string, any>> {
+  const text = await readBodyTextCapped(request);
+  const type = request.headers.get("content-type") || "";
+  if (type.includes("application/json")) return text ? JSON.parse(text) : {};
+  if (type.includes("application/x-www-form-urlencoded")) {
+    return Object.fromEntries(new URLSearchParams(text).entries());
+  }
   return text ? { data: text } : {};
 }
 
@@ -484,10 +512,11 @@ async function ensureDemoInstance(env: Env): Promise<void> {
 // Mirrors the Node server's express.json({ limit: "10mb" }).
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+async function handleFetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request, env) });
+    // Fast-path reject on declared size; readBodyTextCapped() enforces the same
+    // limit while streaming for bodies that omit or misstate Content-Length.
     if (Number(request.headers.get("content-length") || 0) > MAX_BODY_BYTES) {
       return json(request, env, { error: "Payload too large" }, { status: 413 });
     }
@@ -830,6 +859,12 @@ export default {
         } catch (err: any) {
           return json(request, env, { error: err.message }, { status: err.status || 400 });
         }
+        // A past expiration makes the instance immediately deletable, which
+        // would let a teacher bypass the active-instance delete protection.
+        // Only admins may force-expire.
+        if (access.mode === "teacher" && new Date(expiresAt).getTime() <= Date.now()) {
+          return json(request, env, { error: "Only admins can set an expiration in the past" }, { status: 403 });
+        }
         await env.DB.prepare("UPDATE INSTANCES SET EXPIRES_AT = ?, ACTIVE = 1 WHERE INSTANCE_CODE = ?").bind(expiresAt, code).run();
         return json(request, env, { status: "updated", instanceCode: code, expiresAt, active: true });
       }
@@ -995,6 +1030,18 @@ export default {
     }
 
     return json(request, env, { error: "Not found" }, { status: 404 });
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    try {
+      return await handleFetch(request, env);
+    } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        return json(request, env, { error: "Payload too large" }, { status: 413 });
+      }
+      throw err;
+    }
   },
 
   // Mirrors the Node server's periodic cleanupExpired(): purge replay data for
