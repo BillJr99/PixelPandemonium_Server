@@ -36,8 +36,12 @@ function stripJsonc(text) {
       out += ch;
       if (ch === "\\") {
         // Preserve the escaped character verbatim so \" does not end the string.
-        out += next;
-        i++;
+        // Guard against a lone trailing backslash (invalid JSON) so we don't
+        // append the literal "undefined" before JSON.parse throws.
+        if (next !== undefined) {
+          out += next;
+          i++;
+        }
       } else if (ch === '"') {
         inString = false;
       }
@@ -72,8 +76,13 @@ function stripTrailingCommas(text) {
     if (inString) {
       out += ch;
       if (ch === "\\") {
-        out += text[i + 1];
-        i++;
+        // Guard against a lone trailing backslash (invalid JSON) so we don't
+        // append the literal "undefined" before JSON.parse throws.
+        const escaped = text[i + 1];
+        if (escaped !== undefined) {
+          out += escaped;
+          i++;
+        }
       } else if (ch === '"') {
         inString = false;
       }
