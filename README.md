@@ -2,6 +2,8 @@
 
 Node Express/Faye backend for Pixel Pandemonium. It stores replay events, serves instance-scoped APIs, and provides realtime pub/sub channels for live replay.
 
+> **Experimental software.** This is a research and teaching prototype provided as is, with no warranty of any kind. It is not intended for production use and has not undergone a security audit. The sample credentials in `.env.example` (`ADMIN_PASSWORD`, `DEFAULT_TEACHER_KEY`, `DOWNLOAD_TOKEN`) are placeholders and must be changed before any deployment.
+
 ## Requirements
 
 - Node.js 18 or newer
@@ -1006,3 +1008,7 @@ server_url: https://your-repl-url.replit.app
 realtime_url: https://your-repl-url.replit.app
 base_url: https://your-github-user.github.io/PixelPandemonium_Client
 ```
+
+## License
+
+Released under the MIT License. See [LICENSE](LICENSE).
